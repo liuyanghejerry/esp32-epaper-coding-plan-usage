@@ -1,0 +1,26 @@
+[package]
+name = "epaper-hello"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+esp-hal = { version = "1.2.0", features = ["esp32s3", "unstable"] }
+esp-backtrace = { version = "0.20.0", features = [
+    "esp32s3",
+    "panic-handler",
+    "println",
+] }
+esp-println = { version = "0.18.0", features = ["esp32s3", "log-04"] }
+log = "0.4"
+embedded-hal = "1.0"
+embedded-graphics = "0.8.2"
+
+[profile.dev]
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1
+debug = 2
+incremental = false
+lto = "fat"
+opt-level = "s"

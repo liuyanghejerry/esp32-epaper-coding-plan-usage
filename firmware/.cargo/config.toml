@@ -1,0 +1,13 @@
+# Xtensa targets need the esp-rs fork (channel "esp", installed by espup).
+# Crates resolve through the global rsproxy.cn mirror, which does carry
+# the esp-* crates.
+
+[build]
+target = "xtensa-esp32s3-none-elf"
+rustflags = ["-C", "link-arg=-nostartfiles"]
+
+[unstable]
+build-std = ["core"]
+
+[env]
+ESP_LOG = "info"

@@ -1,0 +1,9 @@
+# Rust build artifacts
+firmware/target/
+
+# Generated / dumped binaries
+epaper-hello-app.bin
+full-flash.bin
+
+# macOS
+.DS_Store
