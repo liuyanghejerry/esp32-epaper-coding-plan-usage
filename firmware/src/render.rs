@@ -1,14 +1,8 @@
 //! Render the usage view onto the 200x200 4-colour framebuffer.
 //!
-//! Layout (y in px, text = 9x15 monospace):
-//!   0..28   black header band, white "Kimi Code Usage" at y=13 (flush with the
-//!           band's bottom edge — the panel's top rows are physically clipped)
-//!   47      "Week" + right-aligned "used/limit (pct%)"
-//!   62      weekly progress bar (red when >= 80 %, black otherwise)
-//!   86      "reset MM-DD HH:mm" (weekly reset time, UTC+8)
-//!   121     "5h" (or "Nmin") + right-aligned rolling-window numbers
-//!   136     rolling window progress bar
-//!   160     "reset MM-DD HH:mm" (window reset time, UTC+8)
+//! All positional values come from `firmware/layout.json`, parsed by
+//! `build.rs` into `OUT_DIR/layout.rs` at compile time. Edit that JSON (or
+//! export it from tools/layout-editor.html) and rebuild — no code changes.
 
 use core::fmt::Write as _;
 
@@ -23,6 +17,11 @@ use heapless::String;
 use crate::epd::{Color, FrameBuffer};
 use crate::usage::UsageView;
 
+// Constants generated from layout.json by build.rs: BAND_H, TITLE_X/Y,
+// WEEK_Y, BAR1_Y, RESET1_X/Y, WIN_Y, BAR2_Y, RESET2_X/Y, TEXT_LEFT,
+// TEXT_RIGHT, BAR_X/W/H.
+include!(concat!(env!("OUT_DIR"), "/layout.rs"));
+
 fn pct(used: u32, limit: u32) -> u32 {
     if limit == 0 {
         0
@@ -32,20 +31,17 @@ fn pct(used: u32, limit: u32) -> u32 {
 }
 
 fn bar(fb: &mut FrameBuffer, y: i32, used: u32, limit: u32) {
-    const X: i32 = 10;
-    const W: u32 = 180;
-    const H: u32 = 14;
     // outline
-    Rectangle::new(Point::new(X, y), Size::new(W, H))
+    Rectangle::new(Point::new(BAR_X, y), Size::new(BAR_W, BAR_H))
         .into_styled(PrimitiveStyle::with_stroke(Color::Black, 1))
         .draw(fb)
         .ok();
     // fill
     let p = pct(used, limit);
-    let fill_w = ((W - 2) * p / 100).max(if p > 0 { 2 } else { 0 });
+    let fill_w = ((BAR_W - 2) * p / 100).max(if p > 0 { 2 } else { 0 });
     let color = if p >= 80 { Color::Red } else { Color::Black };
     if fill_w > 0 {
-        Rectangle::new(Point::new(X + 1, y + 1), Size::new(fill_w, H - 2))
+        Rectangle::new(Point::new(BAR_X + 1, y + 1), Size::new(fill_w, BAR_H - 2))
             .into_styled(PrimitiveStyle::with_fill(color))
             .draw(fb)
             .ok();
@@ -55,7 +51,7 @@ fn bar(fb: &mut FrameBuffer, y: i32, used: u32, limit: u32) {
 /// Right-aligned 9x15 text (9 px per cell).
 fn text_right(fb: &mut FrameBuffer, s: &str, y: i32, color: Color) {
     let w = s.len() as i32 * 9;
-    Text::new(s, Point::new(190 - w, y), MonoTextStyle::new(&FONT_9X15, color))
+    Text::new(s, Point::new(TEXT_RIGHT - w, y), MonoTextStyle::new(&FONT_9X15, color))
         .draw(fb)
         .ok();
 }
@@ -69,14 +65,14 @@ fn text(fb: &mut FrameBuffer, s: &str, x: i32, y: i32, color: Color) {
 pub fn render(fb: &mut FrameBuffer, u: &UsageView) {
     fb.fill(Color::White);
 
-    // header band — unchanged 28px tall; title sits flush against its bottom
-    // edge (y=13): the panel's top rows are physically clipped, so the title
-    // must stay as low as possible without leaving the band.
-    Rectangle::new(Point::new(0, 0), Size::new(200, 28))
+    // header band; title sits flush against its bottom edge (the panel's top
+    // rows are physically clipped, so the title must stay as low as possible
+    // without leaving the band).
+    Rectangle::new(Point::new(0, 0), Size::new(200, BAND_H))
         .into_styled(PrimitiveStyle::with_fill(Color::Black))
         .draw(fb)
         .ok();
-    text(fb, "Kimi Code Usage", 10, 13, Color::White);
+    text(fb, "Kimi Code Usage", TITLE_X, TITLE_Y, Color::White);
 
     let mut s: String<32> = String::new();
 
@@ -89,13 +85,13 @@ pub fn render(fb: &mut FrameBuffer, u: &UsageView) {
         u.week_limit,
         pct(u.week_used, u.week_limit)
     );
-    text(fb, "Week", 10, 47, Color::Black);
-    text_right(fb, &s, 47, Color::Black);
-    bar(fb, 62, u.week_used, u.week_limit);
+    text(fb, "Week", TEXT_LEFT, WEEK_Y, Color::Black);
+    text_right(fb, &s, WEEK_Y, Color::Black);
+    bar(fb, BAR1_Y, u.week_used, u.week_limit);
 
     s.clear();
     let _ = write!(s, "reset {}", u.week_reset);
-    text(fb, &s, 10, 86, Color::Black);
+    text(fb, &s, RESET1_X, RESET1_Y, Color::Black);
 
     // rolling window
     s.clear();
@@ -104,7 +100,7 @@ pub fn render(fb: &mut FrameBuffer, u: &UsageView) {
     } else {
         let _ = write!(s, "{}min", u.win_minutes);
     }
-    text(fb, &s, 10, 121, Color::Black);
+    text(fb, &s, TEXT_LEFT, WIN_Y, Color::Black);
     s.clear();
     let _ = write!(
         s,
@@ -113,21 +109,21 @@ pub fn render(fb: &mut FrameBuffer, u: &UsageView) {
         u.win_limit,
         pct(u.win_used, u.win_limit)
     );
-    text_right(fb, &s, 121, Color::Black);
-    bar(fb, 136, u.win_used, u.win_limit);
+    text_right(fb, &s, WIN_Y, Color::Black);
+    bar(fb, BAR2_Y, u.win_used, u.win_limit);
 
     s.clear();
     let _ = write!(s, "reset {}", u.win_reset);
-    text(fb, &s, 10, 160, Color::Black);
+    text(fb, &s, RESET2_X, RESET2_Y, Color::Black);
 }
 
 pub fn render_error(fb: &mut FrameBuffer, line1: &str, line2: &str) {
     fb.fill(Color::White);
-    Rectangle::new(Point::new(0, 0), Size::new(200, 28))
+    Rectangle::new(Point::new(0, 0), Size::new(200, BAND_H))
         .into_styled(PrimitiveStyle::with_fill(Color::Red))
         .draw(fb)
         .ok();
-    text(fb, "Kimi Code Usage", 10, 13, Color::White);
+    text(fb, "Kimi Code Usage", TITLE_X, TITLE_Y, Color::White);
     text(fb, line1, 10, 92, Color::Red);
     text(fb, line2, 10, 116, Color::Black);
 }

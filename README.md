@@ -67,7 +67,7 @@ Authorization: Bearer <api-key>     Accept: application/json
 
 响应里的配额数字是**字符串**；固件提取 `usage`（每周配额 + `resetTime`，显示为 UTC+8）和 `limits[0]`（5 小时滚动窗），`boosterWallet` 等忽略。
 
-画面布局：黑底标题栏 "Kimi Code Usage"、红色会员等级、周配额数值 + 进度条（≥80% 变红）、重置时间、滚动窗用量 + 进度条、底部黄色装饰线。
+画面布局（数据驱动，见下文「界面布局」）：黑底标题栏 "Kimi Code Usage"，周配额数值 + 进度条（≥80% 变红）、每周 reset 时间，5h 滚动窗用量 + 进度条、reset 时间。界面上的所有位置参数在 `firmware/layout.json` 里。
 
 ### 配置（Wi-Fi / API key）
 
@@ -81,6 +81,30 @@ cp .env.example .env
 ```
 
 注意：CLI 的 OAuth token（`~/.kimi-code/credentials/kimi-code.json`）也能用，但**15 分钟就过期**，只适合临时验证；refresh_token 流程不能搬到设备端（刷新会轮换，会把本机 CLI 踢下线）。
+
+### 界面布局（数据 / 展示分离）
+
+所有界面位置参数在 `firmware/layout.json`，不在代码里。`build.rs` 在编译期解析它并生成 `OUT_DIR/layout.rs` 常量，`src/render.rs` 通过 `include!` 引用——改布局只需改 JSON 再重新编译。
+
+微调用可视化编辑器 `tools/layout-editor.html`（单文件，浏览器直接打开）：按 200×200 面板 1:1 建模预览（含顶部物理遮挡区提示），可拖拽或选中后方向键微调（Shift=10px），支持整组/单元素两种移动模式；「导出 JSON」生成的就是 `layout.json` 的内容（复制或下载），「导入 JSON」可把已保存的布局重新载入继续编辑。布局也会自动存在浏览器 localStorage。
+
+```jsonc
+{
+  "band_h": 28,                 // 顶部黑条高度
+  "title": { "x": 10, "y": 13 },// 标题 "Kimi Code Usage"（y 限制在黑条内）
+  "week": { "y": 47 },          // Week 行（label 左对齐 + 数值右对齐）
+  "bar1": { "y": 62 },          // 周进度条
+  "reset1": { "x": 10, "y": 86 },// 每周 reset 时间
+  "win": { "y": 121 },          // 5h 行
+  "bar2": { "y": 136 },         // 滚动窗进度条
+  "reset2": { "x": 10, "y": 160 },
+  "text_left": 10,              // label 左缘 x
+  "text_right": 190,            // 数值右缘 x
+  "bar": { "x": 10, "w": 180, "h": 14 }  // 两条进度条共有样式
+}
+```
+
+`build.rs` 会校验范围（与编辑器一致），越界直接编译失败并报原因。
 
 ## 排障记录：屏幕「有日志、无画面」
 
@@ -131,9 +155,11 @@ firmware/           Rust 固件（esp-hal 1.1，no_std，embassy 异步）
   src/main.rs       应用入口：Wi-Fi/网络任务 + 5 分钟轮询主循环 + GPIO6 供电
   src/epd.rs        1.54G 驱动（2bpp 帧缓冲 + embedded-graphics DrawTarget）
   src/usage.rs      usage API 客户端（reqwless HTTPS + serde-json-core 解析）
-  src/render.rs     usage 画面 / 错误页布局
-  build.rs          链接参数 + 从根目录 .env 注入凭证（cargo:rustc-env）
+  src/render.rs     usage 画面 / 错误页布局（坐标编译期来自 layout.json）
+  layout.json       界面布局数据（可视化编辑器 tools/layout-editor.html 导出）
+  build.rs          链接参数 + 从根目录 .env 注入凭证 + 解析 layout.json 生成布局常量
 reference/          Waveshare / 小智固件参考代码（C/C++）
+tools/layout-editor.html  200×200 界面布局可视化编辑器（单文件，导出/导入 layout.json）
 tools/serial-watch.py  带时间戳的串口监听（容忍端口闪断重附）
 CONNECTION.md       端口拓扑、esptool 命令、已知问题
 .env.example        凭证模板（复制为 .env，gitignored，编译期注入二进制）
