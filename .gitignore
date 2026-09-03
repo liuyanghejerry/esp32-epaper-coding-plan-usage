@@ -4,8 +4,5 @@ firmware/target/
 # Generated build artifacts
 epaper-hello-app.bin
 
-# Credentials — copy firmware/src/secrets.rs.example to firmware/src/secrets.rs
-firmware/src/secrets.rs
-
 # macOS
 .DS_Store

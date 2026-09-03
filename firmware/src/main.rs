@@ -32,8 +32,13 @@ use log::{info, warn};
 
 mod epd;
 mod render;
-mod secrets;
 mod usage;
+
+// Credentials are injected by build.rs from outside the repo
+// (~/.config/esp32-epaper/secrets.rs or $EPAPER_SECRETS).
+mod secrets {
+    include!(concat!(env!("OUT_DIR"), "/secrets.rs"));
+}
 
 use epd::{Epd, FrameBuffer};
 use usage::UsageView;
