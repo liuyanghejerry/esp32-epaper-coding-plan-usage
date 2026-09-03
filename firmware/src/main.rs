@@ -1,92 +1,226 @@
-//! "Hello World!" on a Waveshare ESP32-S3-ePaper-1.54G (ESP32-S3-PICO-1-N8R8).
+//! Kimi Code plan usage on a Waveshare ESP32-S3-ePaper-1.54G (ESP32-S3-PICO-1).
 //!
-//! Board pin map (from Waveshare docs):
+//! Polls https://api.kimi.com/coding/v1/usages over Wi-Fi every 5 minutes and
+//! redraws the panel only when the numbers changed (e-paper longevity).
+//!
+//! Board pin map:
 //!   EPD_SCLK=GPIO12  EPD_MOSI=GPIO13  EPD_CS=GPIO11  EPD_DC=GPIO10
-//!   EPD_RST=GPIO9    EPD_BUSY=GPIO8   EPD_PWR=GPIO6 (panel 3V3 enable)
-//! Logs go to UART0 (GPIO43/44) — visible on the board's other USB port.
+//!   EPD_RST=GPIO9    EPD_BUSY=GPIO8   EPD_PWR=GPIO6 (panel 3V3 enable, LOW=on)
+//! Logs go to the native USB-Serial/JTAG port.
 
 #![no_std]
 #![no_main]
 
-use embedded_graphics::{
-    mono_font::{ascii::FONT_10X20, ascii::FONT_9X15, MonoTextStyle},
-    prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
-    text::Text,
-};
+use embassy_executor::Spawner;
+use embassy_net::{Runner, StackResources};
+use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
-use esp_hal::delay::Delay;
-use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
-use esp_hal::spi::master::{Config as SpiConfig, Spi};
+use esp_hal::{
+    clock::CpuClock,
+    gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
+    interrupt::software::SoftwareInterruptControl,
+    ram,
+    rng::Rng,
+    spi::master::{Config as SpiConfig, Spi},
+    time::Rate,
+    timer::timg::TimerGroup,
+};
 use esp_println::logger::init_logger_from_env;
-use log::info;
+use esp_radio::wifi::{
+    sta::StationConfig, Config as RadioConfig, ControllerConfig, Interface, WifiController,
+};
+use log::{info, warn};
 
 mod epd;
-use epd::{Color, Epd, FrameBuffer};
+mod render;
+mod secrets;
+mod usage;
 
-#[esp_hal::main]
-fn main() -> ! {
-    // Small boot delay so a serial listener can attach after (re)enumeration
-    // before the one-shot boot logs are printed.
-    Delay::new().delay_millis(2000);
+use epd::{Epd, FrameBuffer};
+use usage::UsageView;
+
+esp_bootloader_esp_idf::esp_app_desc!();
+
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
+
+/// One usage query every 5 minutes; the wait is split into 30s heartbeats.
+const QUERY_INTERVAL_SECS: u64 = 300;
+
+#[esp_rtos::main]
+async fn main(spawner: Spawner) -> ! {
     init_logger_from_env();
-    info!("epaper-hello booting on ESP32-S3");
+    info!("epaper-usage booting");
 
-    let p = esp_hal::init(esp_hal::Config::default());
+    let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
+
+    esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 64 * 1024);
+    esp_alloc::heap_allocator!(size: 96 * 1024);
 
     // GPIO6 = EPD3V3_EN: e-paper 3.3 V rail switch, ACTIVE-LOW (high-side
-    // P-MOSFET). Drive low to power the panel. Left floating, the panel is
-    // unpowered — the TCON still answers SPI via parasitic power and BUSY
-    // toggles, but the ink never moves.
+    // P-MOSFET). Left floating, the panel is unpowered — the TCON still
+    // answers SPI via parasitic power, but the ink never moves.
     let _epd_pwr = Output::new(p.GPIO6, Level::Low, OutputConfig::default());
+
+    let timg0 = TimerGroup::new(p.TIMG0);
+    let sw_int = SoftwareInterruptControl::new(p.SW_INTERRUPT);
+    esp_rtos::start(timg0.timer0, sw_int.software_interrupt0);
+
+    // ---- Wi-Fi ----
+    let station_config = RadioConfig::Station(
+        StationConfig::default()
+            .with_ssid(secrets::WIFI_SSID)
+            .with_password(secrets::WIFI_PASSWORD.into()),
+    );
+    let wifi_interface = Interface::station();
+    let controller = WifiController::new(
+        p.WIFI,
+        ControllerConfig::default().with_initial_config(station_config),
+    )
+    .unwrap();
+
+    let rng = Rng::new();
+    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+    let (stack, runner) = embassy_net::new(
+        wifi_interface,
+        embassy_net::Config::dhcpv4(Default::default()),
+        mk_static!(StackResources<4>, StackResources::<4>::new()),
+        seed,
+    );
+
+    spawner.spawn(connection(controller).unwrap());
+    spawner.spawn(net_task(runner).unwrap());
+
+    // ---- e-paper ----
     let rst = Output::new(p.GPIO9, Level::Low, OutputConfig::default());
     let dc = Output::new(p.GPIO10, Level::Low, OutputConfig::default());
     let cs = Output::new(p.GPIO11, Level::High, OutputConfig::default());
     let busy = Input::new(p.GPIO8, InputConfig::default().with_pull(Pull::Up));
-    let sclk = p.GPIO12;
-    let mosi = p.GPIO13;
-
-    let spi = Spi::new(p.SPI2, SpiConfig::default())
+    // 4 MHz: the reference runs 20 MHz on the vendor board, but our wiring is
+    // marginal at that speed; the framebuffer is only 10 KB so speed is moot.
+    let spi = Spi::new(p.SPI2, SpiConfig::default().with_frequency(Rate::from_mhz(4)))
         .unwrap()
-        .with_sck(sclk)
-        .with_mosi(mosi);
-
-    let mut delay = Delay::new();
-
+        .with_sck(p.GPIO12)
+        .with_mosi(p.GPIO13);
     let mut epd = Epd::new(spi, cs, dc, rst, busy);
-    info!("busy idle level: high={}", epd.busy_is_high());
-    epd.init();
-    info!("panel initialised, busy after power-on: high={}", epd.busy_is_high());
-
     let mut fb = FrameBuffer::new();
-    fb.fill(Color::White);
+    let bufs = mk_static!(usage::Buffers, usage::Buffers::new());
 
-    // Red frame around the whole screen
-    Rectangle::new(Point::new(4, 4), Size::new(192, 192))
-        .into_styled(PrimitiveStyle::with_stroke(Color::Red, 4))
-        .draw(&mut fb)
-        .ok();
-    Text::new("Hello World!", Point::new(40, 80), MonoTextStyle::new(&FONT_10X20, Color::Black))
-        .draw(&mut fb)
-        .ok();
-    Text::new("Rust on ESP32-S3", Point::new(28, 115), MonoTextStyle::new(&FONT_9X15, Color::Red))
-        .draw(&mut fb)
-        .ok();
-    // Yellow accent bar
-    Rectangle::new(Point::new(36, 140), Size::new(128, 14))
-        .into_styled(PrimitiveStyle::with_fill(Color::Yellow))
-        .draw(&mut fb)
-        .ok();
-    Text::new("no_std + esp-hal", Point::new(28, 165), MonoTextStyle::new(&FONT_9X15, Color::Black))
-        .draw(&mut fb)
-        .ok();
+    info!("waiting for wifi...");
+    if embassy_time::with_timeout(Duration::from_secs(30), stack.wait_config_up())
+        .await
+        .is_ok()
+    {
+        info!("got ip: {:?}", stack.config_v4().map(|c| c.address));
+    } else {
+        warn!("wifi not up within 30s — will retry queries anyway");
+    }
 
-    let refreshed = epd.display(&fb.buf);
-    info!("refresh completed={}", refreshed);
-    epd.sleep();
-    info!("panel asleep — image persists, idling");
+    let mut last: Option<UsageView> = None;
+    let mut failures: u32 = 0;
+    let mut error_shown = false;
+    let mut tick: u64 = 0;
 
     loop {
-        delay.delay_millis(1000);
+        if stack.is_config_up() {
+            match usage::fetch_usage(stack, bufs, seed ^ tick).await {
+                Ok(view) => {
+                    failures = 0;
+                    error_shown = false;
+                    if last.as_ref() != Some(&view) {
+                        info!("usage changed: {:?} — refreshing panel", view);
+                        render::render(&mut fb, &view);
+                        epd.init().await;
+                        let ok = epd.display(&fb.buf).await;
+                        epd.sleep().await;
+                        info!("refresh completed={}", ok);
+                        last = Some(view);
+                    } else {
+                        info!("usage unchanged, panel untouched");
+                    }
+                }
+                Err(e) => {
+                    failures += 1;
+                    warn!("usage query failed (#{}): {:?}", failures, e);
+                    if last.is_none() && failures >= 3 && !error_shown {
+                        info!("painting error page: query failed");
+                        render::render_error(&mut fb, "query failed", "check wifi/token");
+                        epd.init().await;
+                        let ok = epd.display(&fb.buf).await;
+                        epd.sleep().await;
+                        info!("error page painted, display ok={}", ok);
+                        error_shown = true;
+                    }
+                }
+            }
+        } else {
+            warn!("offline, retrying in 30s");
+            if last.is_none() && !error_shown {
+                failures += 1;
+                if failures >= 3 {
+                    info!("painting error page: wifi offline");
+                    render::render_error(&mut fb, "wifi offline", "check SSID / password");
+                    epd.init().await;
+                    let ok = epd.display(&fb.buf).await;
+                    epd.sleep().await;
+                    info!("error page painted, display ok={}", ok);
+                    error_shown = true;
+                }
+            }
+            tick += 1;
+            Timer::after(Duration::from_secs(30)).await;
+            continue;
+        }
+        tick += 1;
+        // Heartbeat: 30s slices instead of one long sleep, so an attached
+        // serial monitor always shows signs of life.
+        let slices = QUERY_INTERVAL_SECS / 30;
+        for i in 1..=slices {
+            Timer::after(Duration::from_secs(30)).await;
+            // Include the last query outcome so late-attaching serial
+            // monitors (USB buffering drops early boot logs) still see state.
+            match &last {
+                Some(v) => info!(
+                    "heartbeat, next query in {}s, week {}/{}",
+                    (slices - i) * 30,
+                    v.week_used,
+                    v.week_limit
+                ),
+                None => info!(
+                    "heartbeat, next query in {}s, no data (failures={})",
+                    (slices - i) * 30,
+                    failures
+                ),
+            }
+        }
     }
+}
+
+#[embassy_executor::task]
+async fn connection(mut controller: WifiController<'static>) {
+    info!("wifi connection task started");
+    loop {
+        match controller.connect_async().await {
+            Ok(info) => {
+                info!("wifi connected: {:?}", info);
+                let info = controller.wait_for_disconnect_async().await.ok();
+                info!("wifi disconnected: {:?}", info);
+            }
+            Err(e) => {
+                warn!("wifi connect failed: {:?}", e);
+                Timer::after(Duration::from_secs(5)).await;
+            }
+        }
+    }
+}
+
+#[embassy_executor::task]
+async fn net_task(mut runner: Runner<'static, Interface>) {
+    runner.run().await
 }

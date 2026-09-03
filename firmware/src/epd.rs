@@ -3,9 +3,13 @@
 //! Ported command-for-command from Waveshare's reference `EPD_1in54g.c`
 //! (repo: waveshareteam/ESP32-S3-ePaper-1.54G) — keep the register sequence
 //! in sync with it if the panel misbehaves.
+//!
+//! Timing waits are async (embassy-time) so the Wi-Fi/net tasks keep running
+//! during the ~20 s refresh.
 
 use core::convert::Infallible;
 
+use embassy_time::{Duration, Timer};
 use embedded_graphics::{
     draw_target::DrawTarget,
     geometry::{OriginDimensions, Size},
@@ -15,7 +19,6 @@ use embedded_graphics::{
 };
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::spi::SpiBus;
-use esp_hal::delay::Delay;
 
 pub const WIDTH: usize = 200;
 pub const HEIGHT: usize = 200;
@@ -103,6 +106,10 @@ impl DrawTarget for FrameBuffer {
     }
 }
 
+async fn delay_ms(ms: u64) {
+    Timer::after(Duration::from_millis(ms)).await;
+}
+
 /// Driver over any SPI bus + control GPIOs (CS/DC/RST active as documented).
 pub struct Epd<SPI, CS, DC, RST, BUSY> {
     spi: SPI,
@@ -124,10 +131,15 @@ where
         Self { spi, cs, dc, rst, busy }
     }
 
+    // NOTE: esp-hal 1.1's SpiBus::write() returns before the last FIFO chunk
+    // has been clocked out ("The trait impl does not flush after"). Raising
+    // CS right after write() truncates the transfer — the panel then never
+    // sees the command and silently keeps the old image. flush() first.
     fn cmd(&mut self, reg: u8) {
         let _ = self.dc.set_low();
         let _ = self.cs.set_low();
         let _ = self.spi.write(&[reg]);
+        let _ = self.spi.flush();
         let _ = self.cs.set_high();
     }
 
@@ -135,6 +147,7 @@ where
         let _ = self.dc.set_high();
         let _ = self.cs.set_low();
         let _ = self.spi.write(bytes);
+        let _ = self.spi.flush();
         let _ = self.cs.set_high();
     }
 
@@ -143,14 +156,13 @@ where
     }
 
     /// Hardware reset, timing per the shipped epaper_port.c (20 ms low pulse).
-    pub fn reset(&mut self) {
-        let delay = Delay::new();
+    pub async fn reset(&mut self) {
         let _ = self.rst.set_high();
-        delay.delay_millis(200);
+        delay_ms(200).await;
         let _ = self.rst.set_low();
-        delay.delay_millis(20);
+        delay_ms(20).await;
         let _ = self.rst.set_high();
-        delay.delay_millis(200);
+        delay_ms(200).await;
     }
 
     /// Raw BUSY level (true = HIGH = idle, per the reference driver).
@@ -161,22 +173,22 @@ where
     /// BUSY idles HIGH, pulled LOW while the panel works.
     /// Polls every 10 ms like `epaper_readbusyh`, but with a timeout so a
     /// dead panel can't hang the boot. Returns true when it saw HIGH.
-    fn wait_busy(&mut self, max_ms: u32) -> bool {
-        let delay = Delay::new();
+    async fn wait_busy(&mut self, max_ms: u32) -> bool {
         let mut waited: u32 = 0;
         while !self.busy_is_high() {
             if waited >= max_ms {
                 return false;
             }
-            delay.delay_millis(10);
+            delay_ms(10).await;
             waited += 10;
         }
         true
     }
 
     /// Full (non-fast) initialisation, register-for-register from the reference.
-    pub fn init(&mut self) {
-        self.reset();
+    pub async fn init(&mut self) {
+        self.reset().await;
+        log::info!("epd: after reset, busy_high={}", self.busy_is_high());
 
         self.cmd(0x4D);
         self.data1(0x78);
@@ -206,27 +218,41 @@ where
         self.data1(0x08);
 
         self.cmd(0x04); // power on
-        if !self.wait_busy(5_000) {
+        let t0 = embassy_time::Instant::now();
+        if !self.wait_busy(5_000).await {
             log::warn!("busy timeout after power-on (0x04) — panel not responding?");
         }
+        log::info!(
+            "epd: power-on wait took {}ms, busy_high={}",
+            t0.elapsed().as_millis(),
+            self.busy_is_high()
+        );
     }
 
     /// Push a full framebuffer (command 0x10) and refresh (0x12).
     /// A full refresh takes ~20 s. Returns true when BUSY released in time.
-    pub fn display(&mut self, fb: &[u8; BUF_LEN]) -> bool {
+    pub async fn display(&mut self, fb: &[u8; BUF_LEN]) -> bool {
         self.cmd(0x10);
         self.data(fb);
 
         self.cmd(0x12);
         self.data1(0x00);
-        self.wait_busy(40_000)
+        let t0 = embassy_time::Instant::now();
+        let ok = self.wait_busy(40_000).await;
+        log::info!(
+            "epd: refresh wait took {}ms, ok={}, busy_high={}",
+            t0.elapsed().as_millis(),
+            ok,
+            self.busy_is_high()
+        );
+        ok
     }
 
     /// Power off + deep sleep the panel; the image stays on screen.
-    pub fn sleep(&mut self) {
+    pub async fn sleep(&mut self) {
         self.cmd(0x02); // power off
         self.data1(0x00);
-        let _ = self.wait_busy(5_000);
+        let _ = self.wait_busy(5_000).await;
         self.cmd(0x07); // deep sleep
         self.data1(0xA5);
     }

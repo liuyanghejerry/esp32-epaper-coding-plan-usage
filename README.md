@@ -2,6 +2,8 @@
 
 ESP32-S3 驱动 1.54" 四色墨水屏（黑/白/红/黄，200×200，2bpp）的 `no_std` Rust 固件。
 
+当前固件：**Kimi Code plan usage 监视器** —— 连 Wi-Fi 每 5 分钟查询一次 coding plan 用量，数值有变化才刷新墨水屏（护屏）。
+
 ## 硬件
 
 成品板：**Waveshare ESP32-S3-ePaper-1.54G**（ESP32-S3-PICO-1-N8R8，8MB Flash + 8MB PSRAM，板载 ES8311 音频 codec、SHTC3、TF 卡槽、PCF85063 RTC、锂电池充放电管理）。
@@ -52,6 +54,34 @@ uvx esptool --port /dev/cu.usbmodem2101 --chip esp32s3 \
 - 端口存在周期性闪断问题，烧录建议套抢连循环（见 CONNECTION.md「应对闪断的抢连脚本」）。
 - `write-flash` 自带 hash 校验，结束后自动硬复位运行新固件。
 
+## 固件行为（usage 监视器）
+
+启动流程：开 GPIO6 面板供电 → 起 embassy 运行时 → 连 Wi-Fi（DHCP）→ 查询 usage → 数据到手即渲染刷屏 → 之后每 5 分钟查一次，**数值不变不刷屏**（每次全刷约 20s，墨水屏有刷新寿命）。连续 3 次查询失败且尚无成功数据时画红色错误页。主循环每 30s 打一条心跳日志（含最近一次用量），方便随时挂串口确认设备活着。
+
+usage API（与 Kimi Code CLI 的 `/usage` 相同）：
+
+```text
+GET https://api.kimi.com/coding/v1/usages
+Authorization: Bearer <api-key>     Accept: application/json
+```
+
+响应里的配额数字是**字符串**；固件提取 `usage`（每周配额 + `resetTime`，显示为 UTC+8）和 `limits[0]`（5 小时滚动窗），`boosterWallet` 等忽略。
+
+画面布局：黑底标题栏 "Kimi Code Usage"、红色会员等级、周配额数值 + 进度条（≥80% 变红）、重置时间、滚动窗用量 + 进度条、底部黄色装饰线。
+
+### 配置（Wi-Fi / API key）
+
+凭证在 `firmware/src/secrets.rs`（**已 gitignore**），从模板复制：
+
+```bash
+cp firmware/src/secrets.rs.example firmware/src/secrets.rs
+# 填入 WIFI_SSID / WIFI_PASSWORD（仅 2.4GHz，S3 不支持 5G）
+# 填入 KIMI_TOKEN：长期 API key（sk-kimi-...，Kimi Code Console 签发，
+# 本机 JS 版 coding-usage-bar 配置 ~/.coding-usage-bar/config.json 里也有）
+```
+
+注意：CLI 的 OAuth token（`~/.kimi-code/credentials/kimi-code.json`）也能用，但**15 分钟就过期**，只适合临时验证；refresh_token 流程不能搬到设备端（刷新会轮换，会把本机 CLI 踢下线）。
+
 ## 排障记录：屏幕「有日志、无画面」
 
 **症状**：固件日志完全正常（`refresh completed=true`，BUSY 被拉低约 24 秒，与真实全刷时长吻合），但屏幕没有任何闪烁、画面不变。
@@ -64,20 +94,38 @@ uvx esptool --port /dev/cu.usbmodem2101 --chip esp32s3 \
 
 > 教训：这块板的参考驱动（`reference/epaper_port.c`，来自小智固件仓库）不碰 GPIO6，不能据此假设「供电默认开启」。
 
-## 固件行为
+## 排障记录：esp-hal 1.1 的 `SpiBus::write` 不 flush（联网版固件「日志成功、屏幕不变」）
 
-`epaper-hello`：开机延时 2s → 初始化面板 → 绘制并全刷一次画面（红框 + "Hello World!" 等）→ 面板进 deep sleep → 主循环空转。画面静态保持属预期（墨水屏断电也能保持）。
+**症状**：Wi-Fi、HTTPS 查询、渲染全部正常（日志 `refresh completed=true`），但屏幕连闪烁都没有，画面不变。
 
-寄存器序列逐条移植自 Waveshare 参考驱动 `reference/EPD_1in54g.cpp`，面板异常时以它为准对齐。
+**根因**：esp-hal **1.1** 的 `SpiBus::write` trait 实现把 FIFO 装满、启动传输后**立即返回**（源码注释原话："The trait impl does not flush after"）。驱动里 `write()` 之后马上拉高 CS，每个命令/数据包的最后一个块被截断，面板根本收不到命令，BUSY 一直停在空闲高电平，于是 `wait_busy` 也「正常」通过——全链路假成功。旧 Hello World 固件用的是 esp-hal **1.2**（其 trait 实现委托给会等传输完成的 inherent `write`），所以当时没事；联网版因 esp-radio 兼容性降到 1.1 才踩中。
+
+**修复**：`firmware/src/epd.rs` 的 `cmd()`/`data()` 在拉高 CS 前显式 `spi.flush()`。
+
+## 排障记录：TLS `HandshakeFailure`
+
+**症状**：`GET https://api.kimi.com/...` 在 TLS 握手阶段被服务器拒绝（`HandshakeAborted(Fatal, HandshakeFailure)`）。
+
+**根因**：api.kimi.com 前端是火山引擎 WAF，证书链是 **RSA-only**；embedded-tls 默认只在 ClientHello 里宣告 ECDSA/Ed25519 签名算法，服务器无共同算法直接中止。
+
+**修复**：`reqwless` 开 `rsa` feature（→ embedded-tls 宣告 RSA 签名方案并能验证 RSA 签名）。同时记得 `der = "=0.8.0"` + `heapless` feature 的 pin（embedded-tls 的 `der_certificate.rs` 需要，但它自己 manifest 没开）。
+
+### 版本组合（踩坑后的可行解，别乱动）
+
+esp-hal **1.1** + esp-rtos 0.3 + esp-alloc 0.10 + esp-bootloader-esp-idf **0.5** + embassy-{executor 0.10, net 0.9, time 0.5} + reqwless 0.14（内置 embedded-tls 0.18）+ heapless **0.8**（serde-json-core 0.6 只认 0.8）。已发布的 esp-radio 1.0.0-beta.0 只兼容 esp-hal ~1.1；esp-bootloader-esp-idf 0.6 会把 esp-hal 1.2.0-rc 拉进来造成冲突。
 
 ## 文件结构
 
 ```
-firmware/           Rust 固件（esp-hal 1.2，no_std）
-  src/main.rs       应用入口 + GPIO6 供电修复
+firmware/           Rust 固件（esp-hal 1.1，no_std，embassy 异步）
+  src/main.rs       应用入口：Wi-Fi/网络任务 + 5 分钟轮询主循环 + GPIO6 供电
   src/epd.rs        1.54G 驱动（2bpp 帧缓冲 + embedded-graphics DrawTarget）
+  src/usage.rs      usage API 客户端（reqwless HTTPS + serde-json-core 解析）
+  src/render.rs     usage 画面 / 错误页布局
+  src/secrets.rs    Wi-Fi 密码 + API key（gitignored，从 .example 复制）
 reference/          Waveshare / 小智固件参考代码（C/C++）
+tools/serial-watch.py  带时间戳的串口监听（容忍端口闪断重附）
 CONNECTION.md       端口拓扑、esptool 命令、已知问题
-epaper-hello-app.bin  当前固件的应用镜像（elf2image 产物）
-full-flash.bin      原厂固件 8MB 整盘备份（2026-09-02 dump）
+epaper-hello-app.bin  当前固件的应用镜像（elf2image 产物，不入库）
+full-flash.bin      原厂固件 8MB 整盘备份（2026-09-02 dump，已入库）
 ```

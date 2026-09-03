@@ -7,7 +7,7 @@ target = "xtensa-esp32s3-none-elf"
 rustflags = ["-C", "link-arg=-nostartfiles"]
 
 [unstable]
-build-std = ["core"]
+build-std = ["core", "alloc"]
 
 [env]
 ESP_LOG = "info"
