@@ -34,10 +34,12 @@ mod epd;
 mod render;
 mod usage;
 
-// Credentials are injected by build.rs from outside the repo
-// (~/.config/esp32-epaper/secrets.rs or $EPAPER_SECRETS).
+// Secrets are baked in at compile time by build.rs from the gitignored
+// repo-root `.env` (see .env.example).
 mod secrets {
-    include!(concat!(env!("OUT_DIR"), "/secrets.rs"));
+    pub const WIFI_SSID: &str = env!("WIFI_SSID");
+    pub const WIFI_PASSWORD: &str = env!("WIFI_PASSWORD");
+    pub const KIMI_TOKEN: &str = env!("KIMI_TOKEN");
 }
 
 use epd::{Epd, FrameBuffer};

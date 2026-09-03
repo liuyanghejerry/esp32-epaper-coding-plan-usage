@@ -4,5 +4,8 @@ firmware/target/
 # Generated build artifacts
 epaper-hello-app.bin
 
+# Local secrets (Wi-Fi password, API key) — baked in at build time by build.rs
+.env
+
 # macOS
 .DS_Store

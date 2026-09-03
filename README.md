@@ -71,12 +71,10 @@ Authorization: Bearer <api-key>     Accept: application/json
 
 ### 配置（Wi-Fi / API key）
 
-凭证**不进源码树**：编译时由 `firmware/build.rs` 从仓库外读取，默认路径 `~/.config/esp32-epaper/secrets.rs`（可用环境变量 `EPAPER_SECRETS` 覆盖）。首次配置：
+凭证在仓库根目录的 `.env`（**已 gitignore**），编译时由 `build.rs` 注入二进制：
 
 ```bash
-mkdir -p ~/.config/esp32-epaper
-cp firmware/src/secrets.rs.example ~/.config/esp32-epaper/secrets.rs
-chmod 600 ~/.config/esp32-epaper/secrets.rs
+cp .env.example .env
 # 填入 WIFI_SSID / WIFI_PASSWORD（仅 2.4GHz，S3 不支持 5G）
 # 填入 KIMI_TOKEN：长期 API key（sk-kimi-...，Kimi Code Console 签发，
 # 本机 JS 版 coding-usage-bar 配置 ~/.coding-usage-bar/config.json 里也有）
@@ -134,10 +132,11 @@ firmware/           Rust 固件（esp-hal 1.1，no_std，embassy 异步）
   src/epd.rs        1.54G 驱动（2bpp 帧缓冲 + embedded-graphics DrawTarget）
   src/usage.rs      usage API 客户端（reqwless HTTPS + serde-json-core 解析）
   src/render.rs     usage 画面 / 错误页布局
-  src/secrets.rs.example  凭证模板（真凭证放 ~/.config/esp32-epaper/，build.rs 注入）
+  build.rs          链接参数 + 从根目录 .env 注入凭证（cargo:rustc-env）
 reference/          Waveshare / 小智固件参考代码（C/C++）
 tools/serial-watch.py  带时间戳的串口监听（容忍端口闪断重附）
 CONNECTION.md       端口拓扑、esptool 命令、已知问题
+.env.example        凭证模板（复制为 .env，gitignored，编译期注入二进制）
 epaper-hello-app.bin  当前固件的应用镜像（elf2image 产物，不入库）
 full-flash.bin      原厂固件 8MB 整盘备份（2026-09-02 dump，已入库）
 ```
