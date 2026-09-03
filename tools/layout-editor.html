@@ -379,7 +379,7 @@ function move1(id, dx, dy) {
   if (id === 'bar1' || id === 'bar2') { L[id].y = clamp(L[id].y + dy, ...yLimBar()); return; }
   if (id === 'title') {
     L.title.x = clamp(L.title.x + dx, 0, 200 - Math.ceil(tw('Kimi Code Usage')));
-    L.title.y = clamp(L.title.y + dy, 0, L.band_h - 16);
+    L.title.y = clamp(L.title.y + dy, 0, L.band_h - 15);
     return;
   }
   // reset1 / reset2：x 可调，y 同文本行
@@ -391,7 +391,7 @@ function move1(id, dx, dy) {
 function applyMove(id, dx, dy, group) {
   if (id === 'band') {
     L.band_h = clamp(L.band_h + dy, 12, 60);
-    L.title.y = clamp(L.title.y, 0, L.band_h - 16);
+    L.title.y = clamp(L.title.y, 0, L.band_h - 15);
     // 新黑条盖住的内容推下去
     for (const k of ['week', 'bar1', 'reset1', 'win', 'bar2', 'reset2']) {
       L[k].y = Math.max(L[k].y, L.band_h + 1);
@@ -402,6 +402,41 @@ function applyMove(id, dx, dy, group) {
     for (const m of GROUPS[GROUP_OF[id]]) move1(m, dx, dy);
   } else {
     move1(id, dx, dy);
+  }
+}
+
+// 拖拽用：基于 pointerdown 时刻的快照 orig 做绝对定位，避免把"相对起点的
+// 总位移"反复叠在元素当前值上导致漂移失控。
+function move1Abs(id, orig, dx, dy) {
+  dx = Math.round(dx) || 0; dy = Math.round(dy) || 0;
+  if (!dx && !dy) return;
+  if (id === 'week' || id === 'win') { L[id].y = clamp(orig[id].y + dy, ...yLimText()); return; }
+  if (id === 'bar1' || id === 'bar2') { L[id].y = clamp(orig[id].y + dy, ...yLimBar()); return; }
+  if (id === 'title') {
+    L.title.x = clamp(orig.title.x + dx, 0, 200 - Math.ceil(tw('Kimi Code Usage')));
+    L.title.y = clamp(orig.title.y + dy, 0, L.band_h - 15);
+    return;
+  }
+  const w = Math.ceil(tw(elemText(id)));
+  L[id].x = clamp(orig[id].x + dx, 0, 200 - w);
+  L[id].y = clamp(orig[id].y + dy, ...yLimText());
+}
+
+function applyDragMove(d, dx, dy, group) {
+  const { id, orig } = d;
+  if (id === 'band') {
+    L.band_h = clamp(orig.band_h + dy, 12, 60);
+    L.title.y = clamp(orig.title.y, 0, L.band_h - 15);
+    // 新黑条盖住的内容推下去
+    for (const k of ['week', 'bar1', 'reset1', 'win', 'bar2', 'reset2']) {
+      L[k].y = Math.max(orig[k].y, L.band_h + 1);
+    }
+    return;
+  }
+  if (group && GROUP_OF[id] !== 'title') {
+    for (const m of GROUPS[GROUP_OF[id]]) move1Abs(m, orig, dx, dy);
+  } else {
+    move1Abs(id, orig, dx, dy);
   }
 }
 
@@ -417,7 +452,7 @@ canvas.addEventListener('pointerdown', (e) => {
   if (!id) { selected = null; draw(); syncPanel(); return; }
   selected = id;
   canvas.setPointerCapture(e.pointerId);
-  drag = { id, sx: p.x, sy: p.y };
+  drag = { id, sx: p.x, sy: p.y, orig: JSON.parse(JSON.stringify(L)) };
   draw(); syncPanel();
 });
 canvas.addEventListener('pointermove', (e) => {
@@ -425,7 +460,7 @@ canvas.addEventListener('pointermove', (e) => {
   const p = evtPos(e);
   const dx = Math.round(p.x - drag.sx), dy = Math.round(p.y - drag.sy);
   if (!dx && !dy) return;
-  applyMove(drag.id, dx, dy, groupMode);
+  applyDragMove(drag, dx, dy, groupMode);
   draw(); syncPanel();
 });
 canvas.addEventListener('pointerup', () => { if (drag) { drag = null; saveLS(); } });
@@ -468,7 +503,7 @@ function syncPanel() {
 function clampAll() {
   L.band_h = clamp(L.band_h, 12, 60);
   L.title.x = clamp(L.title.x, 0, 200 - Math.ceil(tw('Kimi Code Usage')));
-  L.title.y = clamp(L.title.y, 0, L.band_h - 16);
+  L.title.y = clamp(L.title.y, 0, L.band_h - 15);
   L.week.y = clamp(L.week.y, ...yLimText());
   L.bar1.y = clamp(L.bar1.y, ...yLimBar());
   L.reset1.x = clamp(L.reset1.x, 0, 200 - Math.ceil(tw(elemText('reset1'))));
