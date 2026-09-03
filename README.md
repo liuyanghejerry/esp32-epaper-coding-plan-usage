@@ -102,6 +102,16 @@ cp firmware/src/secrets.rs.example firmware/src/secrets.rs
 
 **修复**：`firmware/src/epd.rs` 的 `cmd()`/`data()` 在拉高 CS 前显式 `spi.flush()`。
 
+## 排障记录：esp-hal 1.1 的 `SpiConfig::with_frequency` 杀死 SCLK
+
+**症状**：上一条修完后面板依然「假成功、无画面」。加埋点后发现决定性证据：`epd.init()` 的 power-on 等待和 `display()` 的刷新等待都**瞬间返回**（10ms 而非正常的 70ms/17-20s），BUSY 全程停在空闲高电平——面板根本没收到任何命令。
+
+**二分过程**：重刷 git 里的旧 Hello World 固件 → 屏幕正常刷新 → 硬件/接线无罪，锁定新固件。随后逐项回退新固件与旧固件的差异：CPU 240MHz + 默认 SPI → 正常；CPU 240MHz + 显式 4MHz → 失聪。实锤：**esp-hal 1.1.2 上只要给 SPI 传显式频率（4MHz、20MHz 都试过），SCLK 就完全不翻转**。默认配置（1MHz）则正常。寄存器级的具体机制未深挖（`recalculate()` 的分频数学看起来是对的，嫌疑在寄存器应用路径）。
+
+**修复**：`SpiConfig::default()`，不调用 `with_frequency`。10KB 帧缓冲在 1MHz 下传输仅 ~80ms，刷新本身要 20s，速度毫无意义。
+
+> 关联线索：旧 Hello World 固件能工作还有一个原因是它用 esp-hal **1.2**——1.2 的 `SpiBus::write` 委托给会等传输完成的 inherent 方法，自带 flush 语义；1.1 两者皆有坑（trait write 不 flush + with_frequency 死时钟）。
+
 ## 排障记录：TLS `HandshakeFailure`
 
 **症状**：`GET https://api.kimi.com/...` 在 TLS 握手阶段被服务器拒绝（`HandshakeAborted(Fatal, HandshakeFailure)`）。

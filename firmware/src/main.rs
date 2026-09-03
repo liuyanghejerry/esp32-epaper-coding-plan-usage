@@ -22,7 +22,6 @@ use esp_hal::{
     ram,
     rng::Rng,
     spi::master::{Config as SpiConfig, Spi},
-    time::Rate,
     timer::timg::TimerGroup,
 };
 use esp_println::logger::init_logger_from_env;
@@ -102,9 +101,13 @@ async fn main(spawner: Spawner) -> ! {
     let dc = Output::new(p.GPIO10, Level::Low, OutputConfig::default());
     let cs = Output::new(p.GPIO11, Level::High, OutputConfig::default());
     let busy = Input::new(p.GPIO8, InputConfig::default().with_pull(Pull::Up));
-    // 4 MHz: the reference runs 20 MHz on the vendor board, but our wiring is
-    // marginal at that speed; the framebuffer is only 10 KB so speed is moot.
-    let spi = Spi::new(p.SPI2, SpiConfig::default().with_frequency(Rate::from_mhz(4)))
+    // NOTE: keep the default SPI clock (1 MHz). On esp-hal 1.1.2/ESP32-S3,
+    // ANY explicit `.with_frequency(...)` (tested 4 MHz and 20 MHz) leaves
+    // SCLK dead — the panel never sees a command, BUSY never leaves idle,
+    // and every transfer reports success. CPU clock (80 vs 240 MHz) is
+    // unrelated; bisected on hardware. 10 KB framebuffer @1 MHz = 80 ms,
+    // so the speed is irrelevant anyway.
+    let spi = Spi::new(p.SPI2, SpiConfig::default())
         .unwrap()
         .with_sck(p.GPIO12)
         .with_mosi(p.GPIO13);
