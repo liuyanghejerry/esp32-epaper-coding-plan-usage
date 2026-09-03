@@ -16,8 +16,11 @@
 //!   "user":  {"membership": {"level": "LEVEL_ADVANCED"}},
 //!   "usage": {"limit": "100", "used": "92", "resetTime": "2026-09-05T15:59:23Z"},
 //!   "limits": [{"window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
-//!               "detail": {"limit": "100", "used": "23", ...}}]
+//!               "detail": {"limit": "100", "used": "23",
+//!                          "resetTime": "2026-09-03T15:59:23Z", ...}}]
 //! }
+//!
+//! `user`/`membership` 被渲染器忽略（界面已不显示等级行），解析时保留字段即可。
 //! ```
 
 use embassy_net::{
@@ -71,6 +74,8 @@ pub struct UsageView {
     pub win_minutes: u32,
     pub win_used: u32,
     pub win_limit: u32,
+    /// Rolling window reset time rendered as "MM-DD HH:mm" in UTC+8.
+    pub win_reset: String<16>,
 }
 
 #[derive(Debug)]
@@ -206,6 +211,7 @@ fn parse(text: &str) -> Result<UsageView, FetchError> {
         win_minutes: 0,
         win_used: 0,
         win_limit: 0,
+        win_reset: String::new(),
     };
 
     if let Some(w) = raw.limits.into_iter().next() {
@@ -218,6 +224,7 @@ fn parse(text: &str) -> Result<UsageView, FetchError> {
             view.win_minutes = minutes;
             view.win_used = num(detail.used).unwrap_or(0);
             view.win_limit = num(detail.limit).unwrap_or(0);
+            view.win_reset = fmt_reset_utc8(detail.reset_time.unwrap_or(""));
         }
     }
 
