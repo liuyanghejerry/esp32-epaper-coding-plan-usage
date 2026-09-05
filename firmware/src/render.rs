@@ -9,7 +9,7 @@ use core::fmt::Write as _;
 use embedded_graphics::{
     mono_font::{ascii::FONT_9X15, MonoTextStyle},
     prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
+    primitives::{Circle, Line, PrimitiveStyle, Rectangle},
     text::Text,
 };
 use heapless::String;
@@ -196,4 +196,23 @@ pub fn render_error(fb: &mut FrameBuffer, line1: &str, line2: &str) {
     text(fb, "Kimi Code Usage", TITLE_X, TITLE_Y, Color::White);
     text(fb, line1, 10, 92, Color::Red);
     text(fb, line2, 10, 116, Color::Black);
+}
+
+/// All-white "this device is off" page, painted right before the soft
+/// power-off releases the battery latch. E-paper keeps its last image
+/// forever, so without this a dead board would keep showing stale usage
+/// numbers and look alive. ASCII only — the firmware has no CJK bitmap font.
+pub fn render_shutdown(fb: &mut FrameBuffer) {
+    fb.fill(Color::White);
+    // ⏻ glyph: ring + stub through the top
+    Circle::new(Point::new(68, 58), 64)
+        .into_styled(PrimitiveStyle::with_stroke(Color::Black, 3))
+        .draw(fb)
+        .ok();
+    Line::new(Point::new(100, 30), Point::new(100, 74))
+        .into_styled(PrimitiveStyle::with_stroke(Color::Black, 6))
+        .draw(fb)
+        .ok();
+    text(fb, "POWER OFF", 59, 146, Color::Black);
+    text(fb, "hold PWR 2s to boot", 14, 168, Color::Black);
 }

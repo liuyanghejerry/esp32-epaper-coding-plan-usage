@@ -8,9 +8,16 @@
 //! corner shows a battery gauge when a lithium pack is attached, or a plug
 //! glyph when the device can only be running from USB.
 //!
+//! Power behaviour: the pack only feeds the board while the PWR button is
+//! held unless firmware latches it, so GPIO17 (BAT_Control) is driven HIGH
+//! right at boot. Holding the button (GPIO18) for ≥2 s repaints the panel
+//! with a "POWER OFF" page and releases the latch again — the board then
+//! dies on battery, or idles parked on USB.
+//!
 //! Board pin map:
 //!   EPD_SCLK=GPIO12  EPD_MOSI=GPIO13  EPD_CS=GPIO11  EPD_DC=GPIO10
 //!   EPD_RST=GPIO9    EPD_BUSY=GPIO8   EPD_PWR=GPIO6 (panel 3V3 enable, LOW=on)
+//!   BAT_Control=GPIO17 (latch, hold HIGH)  PWR button=GPIO18 (pressed=LOW)
 //! Logs go to the native USB-Serial/JTAG port.
 
 #![no_std]
@@ -67,6 +74,51 @@ macro_rules! mk_static {
 /// One usage query every 5 minutes; the wait is split into 30s heartbeats.
 const QUERY_INTERVAL_SECS: u64 = 300;
 
+/// Hold the PWR button this long to trigger the soft power-off. The stock
+/// Waveshare BSP trips at ~1 s (multi_button LONG_TICKS); 2 s makes an
+/// accidental shut unlikely while handling the board.
+const LONG_PRESS_MS: u32 = 2_000;
+
+/// Wait `secs` wall seconds in 50 ms slices while watching the PWR button
+/// (GPIO18, pressed = LOW). A ≥2 s hold repaints the panel with the shutdown
+/// page, releases the battery latch (GPIO17 LOW) and cuts the panel rail —
+/// then parks forever: the board goes dark on battery power, on USB it stays
+/// alive but idle ("end of session"). The button is only polled during these
+/// idle windows, so a hold that lands entirely inside a panel refresh or a
+/// usage query is missed — just hold it again.
+macro_rules! sleep_or_shutdown {
+    ($btn:expr, $secs:expr, $fb:expr, $epd:expr, $epd_pwr:expr, $bat_ctrl:expr) => {{
+        let mut held_ms: u32 = 0;
+        let mut triggered = false;
+        for _ in 0..($secs * 1000 / 50) {
+            Timer::after(Duration::from_millis(50)).await;
+            if $btn.is_low() {
+                held_ms += 50;
+                if held_ms >= LONG_PRESS_MS {
+                    triggered = true;
+                    break;
+                }
+            } else {
+                held_ms = 0;
+            }
+        }
+        if triggered {
+            info!("power button long-press — painting shutdown page");
+            render::render_shutdown($fb);
+            $epd.init().await;
+            let ok = $epd.display(&$fb.buf).await;
+            $epd.sleep().await;
+            info!("shutdown page painted ok={}", ok);
+            $bat_ctrl.set_low(); // open the battery latch; USB keeps the MCU alive
+            $epd_pwr.set_high(); // panel 3V3 rail off (active-low)
+            info!("BAT_Control released — parked");
+            loop {
+                Timer::after(Duration::from_secs(3600)).await;
+            }
+        }
+    }};
+}
+
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
     init_logger_from_env();
@@ -77,10 +129,18 @@ async fn main(spawner: Spawner) -> ! {
     esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 64 * 1024);
     esp_alloc::heap_allocator!(size: 96 * 1024);
 
+    // GPIO17 = BAT_Control: the pack only feeds the 3.3 V rail while the PWR
+    // button is held — firmware must latch it HIGH almost immediately or a
+    // button-boot dies the moment the key is released (stock Waveshare demo
+    // does this first thing in app_main). USB 5 V reaches the DC-DC directly
+    // and needs no latch, so on USB this is a no-op. Released by the
+    // long-press soft-off below.
+    let mut bat_ctrl = Output::new(p.GPIO17, Level::High, OutputConfig::default());
+
     // GPIO6 = EPD3V3_EN: e-paper 3.3 V rail switch, ACTIVE-LOW (high-side
     // P-MOSFET). Left floating, the panel is unpowered — the TCON still
     // answers SPI via parasitic power, but the ink never moves.
-    let _epd_pwr = Output::new(p.GPIO6, Level::Low, OutputConfig::default());
+    let mut epd_pwr = Output::new(p.GPIO6, Level::Low, OutputConfig::default());
 
     let timg0 = TimerGroup::new(p.TIMG0);
     let sw_int = SoftwareInterruptControl::new(p.SW_INTERRUPT);
@@ -116,6 +176,9 @@ async fn main(spawner: Spawner) -> ! {
     let dc = Output::new(p.GPIO10, Level::Low, OutputConfig::default());
     let cs = Output::new(p.GPIO11, Level::High, OutputConfig::default());
     let busy = Input::new(p.GPIO8, InputConfig::default().with_pull(Pull::Up));
+    // PWR button: pressed = LOW (stock BSP uses an internal pull-up with
+    // active level 0).
+    let pwr_btn = Input::new(p.GPIO18, InputConfig::default().with_pull(Pull::Up));
     // NOTE: keep the default SPI clock (1 MHz). On esp-hal 1.1.2/ESP32-S3,
     // ANY explicit `.with_frequency(...)` (tested 4 MHz and 20 MHz) leaves
     // SCLK dead — the panel never sees a command, BUSY never leaves idle,
@@ -131,9 +194,9 @@ async fn main(spawner: Spawner) -> ! {
     let bufs = mk_static!(usage::Buffers, usage::Buffers::new());
 
     // Battery sense: GPIO4 samples VBAT through a 200K/200K divider (Waveshare
-    // board spec), so VBAT ≈ 2 × VADC. (The battery power latch
-    // GPIO17/BAT_Control is deliberately left untouched — driving it HIGH
-    // would keep the pack powering the board after USB is unplugged.)
+    // board spec), so VBAT ≈ 2 × VADC. The battery power latch GPIO17/
+    // BAT_Control is latched HIGH at boot (see top of main) and released by
+    // the long-press soft-off.
     //
     // AdcCalCurve is not optional polish: the default scheme from plain
     // `enable_pin` never triggers calibration_init, so the SAR reference
@@ -226,7 +289,7 @@ async fn main(spawner: Spawner) -> ! {
                 }
             }
             tick += 1;
-            Timer::after(Duration::from_secs(30)).await;
+            sleep_or_shutdown!(pwr_btn, 30, &mut fb, &mut epd, &mut epd_pwr, &mut bat_ctrl);
             continue;
         }
 
@@ -276,7 +339,7 @@ async fn main(spawner: Spawner) -> ! {
         // serial monitor always shows signs of life.
         let slices = QUERY_INTERVAL_SECS / 30;
         for i in 1..=slices {
-            Timer::after(Duration::from_secs(30)).await;
+            sleep_or_shutdown!(pwr_btn, 30, &mut fb, &mut epd, &mut epd_pwr, &mut bat_ctrl);
             // Include the last query outcome so late-attaching serial
             // monitors (USB buffering drops early boot logs) still see state.
             match &last {
