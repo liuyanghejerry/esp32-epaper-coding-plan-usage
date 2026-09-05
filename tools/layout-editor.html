@@ -237,7 +237,7 @@ const DEFAULT_L = {
   title:  { x: 10, y: 13 },            // "Kimi Code Usage"
   week:   { y: 47 },                   // Week 行（label + 右对齐数值）
   bar1:   { y: 62 },                   // 周进度条
-  reset1: { x: 10, y: 86 },            // reset 09-03 23:59
+  reset1: { x: 10, y: 86 },            // reset 09-05 23:59
   win:    { y: 121 },                  // 5h 行
   bar2:   { y: 136 },                  // 窗进度条
   reset2: { x: 10, y: 160 },
@@ -248,11 +248,13 @@ const DEFAULT_L = {
   power:  { x: 10, y: 186 },           // 左下角电源图标（图标左上角；实机有电池显示电量、无电池显示插头）
 };
 
+/* 预览数据默认值 = 2026-09-05 实机照片状态（周 100/100 满条红、5h 窗 0/100、
+   电池 90%），打开编辑器即所见即实机。仅影响预览，不进入布局 JSON。 */
 const DATA = {
-  weekUsed: 98, weekLimit: 100, weekReset: '09-03 23:59',
-  winLabel: '5h', winUsed: 15, winLimit: 100, winReset: '09-02 23:59',
-  powerUsb: true,                      // 预览：无电池（显示插头图标）
-  batPct: 83,                          // 预览：电池电量百分比
+  weekUsed: 100, weekLimit: 100, weekReset: '09-05 23:59',
+  winLabel: '5h', winUsed: 0, winLimit: 100, winReset: '09-05 20:59',
+  powerUsb: false,                     // 预览：电池在位（显示电量图标）
+  batPct: 90,                          // 预览：电池电量百分比
 };
 
 const GROUP_OF = { title: 't', week: 'g1', bar1: 'g1', reset1: 'g1',
