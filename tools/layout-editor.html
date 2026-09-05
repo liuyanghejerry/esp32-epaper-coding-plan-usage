@@ -8,6 +8,10 @@
 
   用途：编辑 firmware/layout.json（墨水屏界面布局数据）。
   - 画布按 200×200 面板 1:1 建模，顶部灰色半透明带 = 面板物理遮挡区（可关）。
+  - 文字渲染与固件逐像素一致：内嵌 embedded-graphics FONT_9X15 点阵位图
+    （9×15/字符，字符宽固定 9px）。layout.json 里的文字 y 是"基线"
+    （固件 Text::new 的 alphabetic baseline，即数字/大写字母的底部），
+    编辑器按同一语义绘制，条与文字的间距和实机一致。
   - 拖拽元素或选中后用方向键微调（Shift=10px）。
   - "整组移动"模式：Week 行 / 进度条 / reset 一起平移；"单元素"模式只动选中项。
   - "导出 JSON"：生成的就是 firmware/layout.json 的内容（可复制/下载）。
@@ -96,11 +100,11 @@
     </div>
 
     <div class="grp">
-      <div class="grp-title">标题（白字，y 被限制在黑条内）</div>
+      <div class="grp-title">标题（白字，y 为基线，被限制在黑条内）</div>
       <div class="row">
         <span class="name"><span class="swatch" style="background:#fff;border:1px solid #999"></span>标题</span>
-        <span class="f"><em>x</em><input type="number" id="p_title_x" data-k="title.x" min="0" max="60" step="1"></span>
-        <span class="f"><em>y</em><input type="number" id="p_title_y" data-k="title.y" min="0" max="44" step="1"></span>
+        <span class="f"><em>x</em><input type="number" id="p_title_x" data-k="title.x" min="0" max="65" step="1"></span>
+        <span class="f"><em>y</em><input type="number" id="p_title_y" data-k="title.y" min="11" max="56" step="1"></span>
       </div>
     </div>
 
@@ -108,7 +112,7 @@
       <div class="grp-title">周配额组（label 左对齐、数值右对齐，共 y）</div>
       <div class="row">
         <span class="name"><span class="swatch" style="background:#000"></span>Week 行</span>
-        <span class="f"><em>y</em><input type="number" id="p_week_y" data-k="week.y" min="29" max="184" step="1"></span>
+        <span class="f"><em>y</em><input type="number" id="p_week_y" data-k="week.y" min="24" max="195" step="1"></span>
       </div>
       <div class="row">
         <span class="name"><span class="swatch" style="background:#000"></span>周进度条</span>
@@ -116,8 +120,8 @@
       </div>
       <div class="row">
         <span class="name"><span class="swatch" style="background:#000"></span>reset #1</span>
-        <span class="f"><em>x</em><input type="number" id="p_reset1_x" data-k="reset1.x" min="0" max="46" step="1"></span>
-        <span class="f"><em>y</em><input type="number" id="p_reset1_y" data-k="reset1.y" min="29" max="184" step="1"></span>
+        <span class="f"><em>x</em><input type="number" id="p_reset1_x" data-k="reset1.x" min="0" max="47" step="1"></span>
+        <span class="f"><em>y</em><input type="number" id="p_reset1_y" data-k="reset1.y" min="24" max="195" step="1"></span>
       </div>
     </div>
 
@@ -125,7 +129,7 @@
       <div class="grp-title">滚动窗组</div>
       <div class="row">
         <span class="name"><span class="swatch" style="background:#000"></span>5h 行</span>
-        <span class="f"><em>y</em><input type="number" id="p_win_y" data-k="win.y" min="29" max="184" step="1"></span>
+        <span class="f"><em>y</em><input type="number" id="p_win_y" data-k="win.y" min="24" max="195" step="1"></span>
       </div>
       <div class="row">
         <span class="name"><span class="swatch" style="background:#000"></span>窗进度条</span>
@@ -133,8 +137,8 @@
       </div>
       <div class="row">
         <span class="name"><span class="swatch" style="background:#000"></span>reset #2</span>
-        <span class="f"><em>x</em><input type="number" id="p_reset2_x" data-k="reset2.x" min="0" max="46" step="1"></span>
-        <span class="f"><em>y</em><input type="number" id="p_reset2_y" data-k="reset2.y" min="29" max="184" step="1"></span>
+        <span class="f"><em>x</em><input type="number" id="p_reset2_x" data-k="reset2.x" min="0" max="47" step="1"></span>
+        <span class="f"><em>y</em><input type="number" id="p_reset2_y" data-k="reset2.y" min="24" max="195" step="1"></span>
       </div>
     </div>
 
@@ -197,7 +201,9 @@
 <script>
 'use strict';
 
-/* ---------- 模型：与 firmware/layout.json 当前值一致 ---------- */
+/* ---------- 模型：与 firmware/layout.json 当前值一致 ----------
+   所有文字 y 均为"基线"（固件 Text::new 的 alphabetic baseline，即
+   数字/大写字母的下缘），9×15 字符格顶部 = y - 11。 */
 const DEFAULT_L = {
   band_h: 28,                          // 顶部黑条高度
   title:  { x: 10, y: 13 },            // "Kimi Code Usage"
@@ -242,11 +248,41 @@ let view = 'normal';
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
-const FONT = '15px Menlo, "Courier New", monospace';
-
-function setFont() { ctx.font = FONT; ctx.textBaseline = 'top'; ctx.fillStyle = '#000'; }
-function tw(s) { setFont(); return ctx.measureText(s).width; }
 function pct(used, limit) { return Math.min(100, Math.floor(used * 100 / (limit || 1))); }
+
+/* ---------- 固件同款点阵字体（embedded-graphics FONT_9X15）----------
+   位图取自 fonts/raw/ascii/font_9x15.raw（90 行 × 18 字节，MSB 在前，
+   字符格 9×15 按列主序排布）。ASCII 映射：glyph 序号 = 字符码 - 0x20，
+   未知字符按固件规则回退为 '?'。与 render.rs 的 Text 一样，这里所有
+   文字 y 都是"基线"（字符格第 11 行，即数字/大写字母的下缘）。 */
+const FONT_W = 9, FONT_H = 15, FONT_BASELINE = 11;
+const FONT_BMP = (s => {
+  const b = atob(s), a = new Uint8Array(b.length);
+  for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i);
+  return a;
+})('AAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAABAgAAAAAAAAAAAQEgACBCMAQCAQCAAAAAAACAAQEhIPikSAQCAQSQAAAAAAEAAQEhISSkSAQEAIKgQAAAAAEAAQAD8SBISAAEAIHAQAAAAAIAAQABIKAQMAAEAIKgQAAAAAQAAQABIHAQMQAEAIST+AD+AAQAAAAD8CgkSgAEAICAQAAAAAgAAAABICRKRAAEAIAAQAAAABAAAQABISRKSgACAQAAQDAADBAAAQAAAPiEMQACAQAAADAADCAAAAAAACAAAAABAgAAABAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHAQPj+Aj+Hj+HB8AAAAgAIB8IgwQQCBiAIACIiCAAABAAECCQRQQQECiAQAEQSCAAACAACCCQSQAgIEi8QAEIiCDAYEAABACQQQBAcIjCXgIHCGDAYID+AgEQQQCACQgCYQIIh6AAAIAAAgIQQQEACfwCQQQQQCAAAEAABAQQQQIACAgCQQQQQCAAACD+CAQIgQQCCAiCQQgIgEDAYBAAEAAHD+fx8Ah8PggHB4DAYAgAIAQAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPgQfB8fD+fx8QR8D6CQCCQR8QQoQiCQiAQCCQQQAiEQCCQSCQREQSAQSAQCAQQQAiIQDGYSCTyCQiAQSAQCAQQQAiQQCqUSCUSCfCAQT4fCAfwQAjgQCqSSCUyCQiAQSAQCOQQQAigQCSRSCTT+QSAQSAQCCQQQAiQQCSQyCQCCQSAQSAQCCQQQAiIQCCQSCQCCQiCQiAQCCQQQQiEQCCQSCPiCfB8fD+QB8QR8PCCfyCQR8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8AB4AAAfh8fh8fyCQSCQSCfwgQAICAAQSCQSCCCCQSCQSCAQgIAIFAAQSCQSCCCCQSCIhEAggIAIIgAQSCQSACCCIiCFAoBAgEAIQQAfiCfhwCCCIiSCAQCAgCAIAAAQCCSAMCCCIiSCAQEAgCAIAAAQCCRACCCCFCSFAQIAgBAIAAAQCiQiCCCCFCSIgQQAgAgIAAAQCSQSCCCCFCqQQQQAgAgIAAAQB8QR8CB8CBEQQQfwgAQIAAAAAIAAAAAAAAAAAAAA8AB4AH+AAGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAACAAQAAAQADgAQAwBiAOAAAAABAAQAAAQAEQAQAAACACAAAAAAAAQAAAQAEQAQAAACACAAAAAAB8Xh8PR8EB6XhwDiCCDsXh8AACYSCQyCECEYQQAiMCCSYSCAACQSAQSCfCEQQQAiwCCSQSCAB+QSAQT+ECEQQQAjACCSQSCACCQSAQSAEB4QQQAiwCCSQSCACGYSCQyAECAQQQAiMCCSQSCAB6Xh8PR8EB8QR8QiCPiCQR8AAAAAAAAAACCAAAQgAAAAAAAAAAAAAAAAACCAAAQgAAAAAAAAAAAAAAAAAB8AAAPAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOCDgAAAAAAAAAAAAAAAAAAAAQCAQMR8AAAAAAEAAAAAAAAAAQCAQSSCAAAAAAEAAAAAAAAAAQCAQRiCXh6Th8fiEQSCQSEfwICAgAACYSGMSCECEQSCIiEAgwCAYAAEQSCISAECEIiSFCEBAwCAYAAIQSCIB8ECEIiSCCECAICAgAAQQSCIACECEFCSFCEEAQCAQAAQYSGICCESEFCqIiMIAQCAQAAAXh6IB8Dh6CBEQR0fwQCAQAAQQACAAAAAAAAAAAEAAOCDgAAAQACAAAAAAAAAACEAAAAAAAAAQACAAAAAAAAAAB4AAAAAAAAA');
+
+function glyphPx(ci, r, c) {
+  const x = (ci % 16) * FONT_W + c, y = ((ci / 16) | 0) * FONT_H + r;
+  return (FONT_BMP[y * 18 + (x >> 3)] & (0x80 >> (x & 7))) !== 0;
+}
+function drawGlyph(ci, x, baselineY, color) {
+  ctx.fillStyle = color;
+  const top = baselineY - FONT_BASELINE;
+  for (let r = 0; r < FONT_H; r++)
+    for (let c = 0; c < FONT_W; c++)
+      if (glyphPx(ci, r, c)) ctx.fillRect(x + c, top + r, 1, 1);
+}
+/* 固件是等宽字体：宽度 = 字符数 × 9（对应 render.rs 里 s.len() * 9） */
+function textW(s) { return s.length * FONT_W; }
+/* 对应 render.rs::text —— (x, 基线 y) 定位，逐像素绘制 */
+function fwText(s, x, baselineY, color) {
+  for (let i = 0; i < s.length; i++) {
+    const cc = s.charCodeAt(i);
+    const ci = (cc >= 0x20 && cc <= 0x7e) ? cc - 0x20 : 0x3f - 0x20;  // 未知字符 -> '?'
+    drawGlyph(ci, x + i * FONT_W, baselineY, color);
+  }
+}
 
 /* 元素文字（用于命中检测 / 宽度约束） */
 function elemText(id) {
@@ -258,30 +294,27 @@ function elemText(id) {
 function elemRect(id) {
   switch (id) {
     case 'band':   return { x: 0, y: L.band_h - 2, w: 200, h: 4 };
-    case 'title':  { const s = elemText('title');  return { x: L.title.x,  y: L.title.y,  w: Math.ceil(tw(s)), h: 15 }; }
-    case 'week':   return { x: L.text_left, y: L.week.y, w: L.text_right - L.text_left, h: 15 };
+    case 'title':  return { x: L.title.x, y: L.title.y - FONT_BASELINE, w: textW(elemText('title')), h: FONT_H };
+    case 'week':   return { x: L.text_left, y: L.week.y - FONT_BASELINE, w: L.text_right - L.text_left, h: FONT_H };
     case 'bar1':   return { x: L.bar.x, y: L.bar1.y, w: L.bar.w, h: L.bar.h };
-    case 'reset1': { const s = elemText('reset1'); return { x: L.reset1.x, y: L.reset1.y, w: Math.ceil(tw(s)), h: 15 }; }
-    case 'win':    return { x: L.text_left, y: L.win.y, w: L.text_right - L.text_left, h: 15 };
+    case 'reset1': return { x: L.reset1.x, y: L.reset1.y - FONT_BASELINE, w: textW(elemText('reset1')), h: FONT_H };
+    case 'win':    return { x: L.text_left, y: L.win.y - FONT_BASELINE, w: L.text_right - L.text_left, h: FONT_H };
     case 'bar2':   return { x: L.bar.x, y: L.bar2.y, w: L.bar.w, h: L.bar.h };
-    case 'reset2': { const s = elemText('reset2'); return { x: L.reset2.x, y: L.reset2.y, w: Math.ceil(tw(s)), h: 15 }; }
+    case 'reset2': return { x: L.reset2.x, y: L.reset2.y - FONT_BASELINE, w: textW(elemText('reset2')), h: FONT_H };
   }
   return null;
 }
 
 /* ---------- 绘制 ---------- */
-function fillText(s, x, y, color) {
-  setFont(); ctx.fillStyle = color; ctx.fillText(s, x, y);
-}
-function fillTextRight(s, y, color) {
-  setFont(); ctx.fillStyle = color; ctx.fillText(s, L.text_right - ctx.measureText(s).width, y);
-}
+/* 对应 render.rs::text / text_right：y 为基线，右对齐宽 = 字符数 × 9 */
+function fillText(s, x, y, color) { fwText(s, x, y, color); }
+function fillTextRight(s, y, color) { fwText(s, L.text_right - textW(s), y, color); }
 function drawBar(y, used, limit) {
   const { x, w, h } = L.bar;
   ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
   ctx.strokeRect(x + .5, y + .5, w - 1, h - 1);
   const p = pct(used, limit);
-  const fw = Math.max((w - 2) * p / 100, p > 0 ? 2 : 0);
+  const fw = Math.max(Math.floor((w - 2) * p / 100), p > 0 ? 2 : 0);   // 固件为整数除法
   if (fw > 0) {
     ctx.fillStyle = p >= 80 ? '#c00000' : '#000';
     ctx.fillRect(x + 1, y + 1, fw, h - 2);
@@ -369,7 +402,7 @@ function hitTest(px, py) {
   return null;
 }
 
-function yLimText() { return [L.band_h + 1, 184]; }
+function yLimText() { return [L.band_h + FONT_BASELINE + 1, 195]; }   // 文字格整体置于黑条之下
 function yLimBar()  { return [L.band_h + 1, 200 - L.bar.h - 1]; }
 
 function move1(id, dx, dy) {
@@ -378,12 +411,12 @@ function move1(id, dx, dy) {
   if (id === 'week' || id === 'win') { L[id].y = clamp(L[id].y + dy, ...yLimText()); return; }
   if (id === 'bar1' || id === 'bar2') { L[id].y = clamp(L[id].y + dy, ...yLimBar()); return; }
   if (id === 'title') {
-    L.title.x = clamp(L.title.x + dx, 0, 200 - Math.ceil(tw('Kimi Code Usage')));
-    L.title.y = clamp(L.title.y + dy, 0, L.band_h - 15);
+    L.title.x = clamp(L.title.x + dx, 0, 200 - textW('Kimi Code Usage'));
+    L.title.y = clamp(L.title.y + dy, FONT_BASELINE, Math.max(FONT_BASELINE, L.band_h - 4));
     return;
   }
   // reset1 / reset2：x 可调，y 同文本行
-  const w = Math.ceil(tw(elemText(id)));
+  const w = textW(elemText(id));
   L[id].x = clamp(L[id].x + dx, 0, 200 - w);
   L[id].y = clamp(L[id].y + dy, ...yLimText());
 }
@@ -391,10 +424,10 @@ function move1(id, dx, dy) {
 function applyMove(id, dx, dy, group) {
   if (id === 'band') {
     L.band_h = clamp(L.band_h + dy, 12, 60);
-    L.title.y = clamp(L.title.y, 0, L.band_h - 15);
+    L.title.y = clamp(L.title.y, FONT_BASELINE, Math.max(FONT_BASELINE, L.band_h - 4));
     // 新黑条盖住的内容推下去
     for (const k of ['week', 'bar1', 'reset1', 'win', 'bar2', 'reset2']) {
-      L[k].y = Math.max(L[k].y, L.band_h + 1);
+      L[k].y = Math.max(L[k].y, L.band_h + FONT_BASELINE + 1);
     }
     return;
   }
@@ -413,11 +446,11 @@ function move1Abs(id, orig, dx, dy) {
   if (id === 'week' || id === 'win') { L[id].y = clamp(orig[id].y + dy, ...yLimText()); return; }
   if (id === 'bar1' || id === 'bar2') { L[id].y = clamp(orig[id].y + dy, ...yLimBar()); return; }
   if (id === 'title') {
-    L.title.x = clamp(orig.title.x + dx, 0, 200 - Math.ceil(tw('Kimi Code Usage')));
-    L.title.y = clamp(orig.title.y + dy, 0, L.band_h - 15);
+    L.title.x = clamp(orig.title.x + dx, 0, 200 - textW('Kimi Code Usage'));
+    L.title.y = clamp(orig.title.y + dy, FONT_BASELINE, Math.max(FONT_BASELINE, L.band_h - 4));
     return;
   }
-  const w = Math.ceil(tw(elemText(id)));
+  const w = textW(elemText(id));
   L[id].x = clamp(orig[id].x + dx, 0, 200 - w);
   L[id].y = clamp(orig[id].y + dy, ...yLimText());
 }
@@ -426,10 +459,10 @@ function applyDragMove(d, dx, dy, group) {
   const { id, orig } = d;
   if (id === 'band') {
     L.band_h = clamp(orig.band_h + dy, 12, 60);
-    L.title.y = clamp(orig.title.y, 0, L.band_h - 15);
+    L.title.y = clamp(orig.title.y, FONT_BASELINE, Math.max(FONT_BASELINE, L.band_h - 4));
     // 新黑条盖住的内容推下去
     for (const k of ['week', 'bar1', 'reset1', 'win', 'bar2', 'reset2']) {
-      L[k].y = Math.max(orig[k].y, L.band_h + 1);
+      L[k].y = Math.max(orig[k].y, L.band_h + FONT_BASELINE + 1);
     }
     return;
   }
@@ -502,15 +535,15 @@ function syncPanel() {
 
 function clampAll() {
   L.band_h = clamp(L.band_h, 12, 60);
-  L.title.x = clamp(L.title.x, 0, 200 - Math.ceil(tw('Kimi Code Usage')));
-  L.title.y = clamp(L.title.y, 0, L.band_h - 15);
+  L.title.x = clamp(L.title.x, 0, 200 - textW('Kimi Code Usage'));
+  L.title.y = clamp(L.title.y, FONT_BASELINE, Math.max(FONT_BASELINE, L.band_h - 4));
   L.week.y = clamp(L.week.y, ...yLimText());
   L.bar1.y = clamp(L.bar1.y, ...yLimBar());
-  L.reset1.x = clamp(L.reset1.x, 0, 200 - Math.ceil(tw(elemText('reset1'))));
+  L.reset1.x = clamp(L.reset1.x, 0, 200 - textW(elemText('reset1')));
   L.reset1.y = clamp(L.reset1.y, ...yLimText());
   L.win.y = clamp(L.win.y, ...yLimText());
   L.bar2.y = clamp(L.bar2.y, ...yLimBar());
-  L.reset2.x = clamp(L.reset2.x, 0, 200 - Math.ceil(tw(elemText('reset2'))));
+  L.reset2.x = clamp(L.reset2.x, 0, 200 - textW(elemText('reset2')));
   L.reset2.y = clamp(L.reset2.y, ...yLimText());
   L.text_left = clamp(L.text_left, 0, 180);
   L.text_right = clamp(L.text_right, 40, 199);
