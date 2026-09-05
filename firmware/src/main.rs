@@ -21,7 +21,7 @@ use embassy_net::{Runner, StackResources};
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::{
-    analog::adc::{Adc, AdcConfig, Attenuation},
+    analog::adc::{Adc, AdcCalCurve, AdcConfig, Attenuation},
     clock::CpuClock,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
     interrupt::software::SoftwareInterruptControl,
@@ -131,12 +131,18 @@ async fn main(spawner: Spawner) -> ! {
     let bufs = mk_static!(usage::Buffers, usage::Buffers::new());
 
     // Battery sense: GPIO4 samples VBAT through a 200K/200K divider (Waveshare
-    // board spec), so real VBAT ≈ reading × 2. 11 dB attenuation ⇒ ~3.1 V
-    // full scale on ADC1, hence the ×6200/4095 estimate below. (The battery
-    // power latch GPIO17/BAT_Control is deliberately left untouched — driving
-    // it HIGH would keep the pack powering the board after USB is unplugged.)
+    // board spec), so VBAT ≈ 2 × VADC. (The battery power latch
+    // GPIO17/BAT_Control is deliberately left untouched — driving it HIGH
+    // would keep the pack powering the board after USB is unplugged.)
+    //
+    // AdcCalCurve is not optional polish: the default scheme from plain
+    // `enable_pin` never triggers calibration_init, so the SAR reference
+    // divider (regi2c ADC_SAR1_DREF) keeps its reset value and every reading
+    // above ~1.5 V saturates at full scale — see esp-rs/esp-hal#326. The
+    // curve scheme programs DREF and returns millivolts.
     let mut adc1_config = AdcConfig::new();
-    let mut bat_pin = adc1_config.enable_pin(p.GPIO4, Attenuation::_11dB);
+    let mut bat_pin =
+        adc1_config.enable_pin_with_cal::<_, AdcCalCurve<_>>(p.GPIO4, Attenuation::_11dB);
     let mut adc1 = Adc::new(p.ADC1, adc1_config);
 
     info!("waiting for wifi...");
@@ -181,18 +187,19 @@ async fn main(spawner: Spawner) -> ! {
         let clock_changed = shown_clock.as_ref() != Some(&clock);
 
         // ---- battery / power indicator state ----
-        // GPIO4 reads VBAT/2; raw ≈ mv/2 × 4095/3100. A real cell sits in
-        // raw ≈ 1900..3100 (VBAT 2.9–4.7 V); the full-scale 4095 seen with
-        // an empty battery connector means "no battery ⇒ USB-powered".
-        let bat_raw = loop {
+        // read_oneshot returns VADC in millivolts (curve-calibrated); the
+        // divider halves VBAT, so a cell in 3.0–4.2 V reads 1500–2100 mV.
+        // Outside that window (e.g. 0 V with an empty battery connector) the
+        // only possible supply is USB, shown as the plug glyph.
+        let vadc_mv = loop {
             match adc1.read_oneshot(&mut bat_pin) {
                 Ok(v) => break v,
                 Err(nb::Error::WouldBlock) => {}
                 Err(nb::Error::Other(_)) => break 0,
             }
         };
-        let bat_mv = bat_raw as u32 * 6200 / 4095;
-        let power = if (1900..=3100).contains(&bat_raw) {
+        let bat_mv = vadc_mv as u32 * 2;
+        let power = if (1500..=2100).contains(&vadc_mv) {
             let pct = (((bat_mv as i32) - 3300) * 100 / 900).clamp(0, 100) as u32;
             render::PowerState::Battery { pct }
         } else {
@@ -274,21 +281,21 @@ async fn main(spawner: Spawner) -> ! {
             // monitors (USB buffering drops early boot logs) still see state.
             match &last {
                 Some(v) => info!(
-                    "heartbeat, next query in {}s, clock {}, week {}/{}, bat ~{}mV (raw {})",
+                    "heartbeat, next query in {}s, clock {}, week {}/{}, bat ~{}mV (adc {}mV)",
                     (slices - i) * 30,
                     shown_clock.as_deref().unwrap_or("--:--"),
                     v.week_used,
                     v.week_limit,
                     bat_mv,
-                    bat_raw
+                    vadc_mv
                 ),
                 None => info!(
-                    "heartbeat, next query in {}s, clock {}, no data (failures={}), bat ~{}mV (raw {})",
+                    "heartbeat, next query in {}s, clock {}, no data (failures={}), bat ~{}mV (adc {}mV)",
                     (slices - i) * 30,
                     shown_clock.as_deref().unwrap_or("--:--"),
                     failures,
                     bat_mv,
-                    bat_raw
+                    vadc_mv
                 ),
             }
         }
