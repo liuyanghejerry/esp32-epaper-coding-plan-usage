@@ -10,5 +10,6 @@
   "text_left": 10,
   "text_right": 190,
   "bar": { "x": 10, "w": 180, "h": 14 },
-  "clock": { "right": 190, "y": 195 }
+  "clock": { "right": 190, "y": 195 },
+  "power": { "x": 10, "y": 186 }
 }

@@ -4,7 +4,9 @@
 //! redraws the panel only when the numbers changed (e-paper longevity). An
 //! NTP-synced "HH:MM" clock (UTC+8) sits in the bottom-right corner and
 //! repaints every cycle — an e-paper keeps its image when powered off, so
-//! the ticking clock is the "device is alive" indicator.
+//! the ticking clock is the "device is alive" indicator. The bottom-left
+//! corner shows a battery gauge when a lithium pack is attached, or a plug
+//! glyph when the device can only be running from USB.
 //!
 //! Board pin map:
 //!   EPD_SCLK=GPIO12  EPD_MOSI=GPIO13  EPD_CS=GPIO11  EPD_DC=GPIO10
@@ -149,6 +151,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let mut last: Option<UsageView> = None;
     let mut shown_clock: Option<String<5>> = None;
+    let mut last_power: Option<render::PowerState> = None;
     // Unix epoch seconds at the last NTP sync + the sync instant; between
     // syncs "now" = base + monotonic elapsed.
     let mut ntp_at: Option<(u64, embassy_time::Instant)> = None;
@@ -177,20 +180,42 @@ async fn main(spawner: Spawner) -> ! {
         };
         let clock_changed = shown_clock.as_ref() != Some(&clock);
 
+        // ---- battery / power indicator state ----
+        // GPIO4 reads VBAT/2; raw ≈ mv/2 × 4095/3100. A real cell sits in
+        // raw ≈ 1900..3100 (VBAT 2.9–4.7 V); the full-scale 4095 seen with
+        // an empty battery connector means "no battery ⇒ USB-powered".
+        let bat_raw = loop {
+            match adc1.read_oneshot(&mut bat_pin) {
+                Ok(v) => break v,
+                Err(nb::Error::WouldBlock) => {}
+                Err(nb::Error::Other(_)) => break 0,
+            }
+        };
+        let bat_mv = bat_raw as u32 * 6200 / 4095;
+        let power = if (1900..=3100).contains(&bat_raw) {
+            let pct = (((bat_mv as i32) - 3300) * 100 / 900).clamp(0, 100) as u32;
+            render::PowerState::Battery { pct }
+        } else {
+            render::PowerState::Usb
+        };
+        let power_changed = last_power.as_ref() != Some(&power);
+
         if !stack.is_config_up() {
             warn!("offline, retrying in 30s");
             if last.is_none() {
                 failures += 1;
-                if failures >= 3 && (!error_shown || clock_changed) {
+                if failures >= 3 && (!error_shown || clock_changed || power_changed) {
                     info!("painting error page: wifi offline, clock {}", clock);
                     render::render_error(&mut fb, "wifi offline", "check SSID / password");
                     render::draw_clock(&mut fb, &clock);
+                    render::draw_power(&mut fb, &power);
                     epd.init().await;
                     let ok = epd.display(&fb.buf).await;
                     epd.sleep().await;
                     info!("error page painted, display ok={}", ok);
                     error_shown = true;
                     shown_clock = Some(clock.clone());
+                    last_power = Some(power);
                 }
             }
             tick += 1;
@@ -202,19 +227,21 @@ async fn main(spawner: Spawner) -> ! {
             Ok(view) => {
                 failures = 0;
                 error_shown = false;
-                if last.as_ref() != Some(&view) || clock_changed {
+                if last.as_ref() != Some(&view) || clock_changed || power_changed {
                     info!(
                         "refreshing panel: clock {}, week {}/{}",
                         clock, view.week_used, view.week_limit
                     );
                     render::render(&mut fb, &view);
                     render::draw_clock(&mut fb, &clock);
+                    render::draw_power(&mut fb, &power);
                     epd.init().await;
                     let ok = epd.display(&fb.buf).await;
                     epd.sleep().await;
                     info!("refresh completed={}", ok);
                     last = Some(view);
                     shown_clock = Some(clock.clone());
+                    last_power = Some(power);
                 } else {
                     info!("usage unchanged, panel untouched");
                 }
@@ -222,30 +249,24 @@ async fn main(spawner: Spawner) -> ! {
             Err(e) => {
                 failures += 1;
                 warn!("usage query failed (#{}): {:?}", failures, e);
-                if last.is_none() && failures >= 3 && (!error_shown || clock_changed) {
+                if last.is_none() && failures >= 3 && (!error_shown || clock_changed || power_changed) {
                     info!("painting error page: query failed, clock {}", clock);
                     render::render_error(&mut fb, "query failed", "check wifi/token");
                     render::draw_clock(&mut fb, &clock);
+                    render::draw_power(&mut fb, &power);
                     epd.init().await;
                     let ok = epd.display(&fb.buf).await;
                     epd.sleep().await;
                     info!("error page painted, display ok={}", ok);
                     error_shown = true;
                     shown_clock = Some(clock.clone());
+                    last_power = Some(power);
                 }
             }
         }
         tick += 1;
         // Heartbeat: 30s slices instead of one long sleep, so an attached
         // serial monitor always shows signs of life.
-        let bat_raw = loop {
-            match adc1.read_oneshot(&mut bat_pin) {
-                Ok(v) => break v,
-                Err(nb::Error::WouldBlock) => {}
-                Err(nb::Error::Other(_)) => break 0,
-            }
-        };
-        let bat_mv = bat_raw as u32 * 6200 / 4095;
         let slices = QUERY_INTERVAL_SECS / 30;
         for i in 1..=slices {
             Timer::after(Duration::from_secs(30)).await;

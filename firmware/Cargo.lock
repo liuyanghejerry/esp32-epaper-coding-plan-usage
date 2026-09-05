@@ -937,6 +937,7 @@ dependencies = [
  "esp-rtos",
  "heapless 0.8.0",
  "log",
+ "nb 1.1.0",
  "reqwless",
  "serde",
  "serde-json-core",

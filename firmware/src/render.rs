@@ -131,6 +131,62 @@ pub fn draw_clock(fb: &mut FrameBuffer, hhmm: &str) {
     .ok();
 }
 
+/// Power indicator in the bottom-left corner. The board has no VBUS or
+/// charge-status line to the MCU (ETA6098 STAT only drives the charge LED),
+/// so "battery attached" (VBAT in a plausible cell range) is the proxy:
+/// with a pack attached the icon shows its level, without one USB is the
+/// only possible source and a plug glyph is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerState {
+    Usb,
+    Battery { pct: u32 },
+}
+
+pub fn draw_power(fb: &mut FrameBuffer, ps: &PowerState) {
+    fn dot_rect(
+        fb: &mut FrameBuffer,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        filled: bool,
+    ) {
+        for yy in 0..h {
+            for xx in 0..w {
+                if filled || xx == 0 || xx == w - 1 || yy == 0 || yy == h - 1 {
+                    fb.set((x + xx) as usize, (y + yy) as usize, Color::Black);
+                }
+            }
+        }
+    }
+    let (x0, y0) = (POWER_X, POWER_Y);
+    match ps {
+        PowerState::Usb => {
+            dot_rect(fb, x0, y0 + 1, 2, 2, true); // prongs
+            dot_rect(fb, x0, y0 + 7, 2, 2, true);
+            dot_rect(fb, x0 + 3, y0, 8, 10, true); // body
+            dot_rect(fb, x0 + 11, y0 + 4, 7, 2, true); // cord
+        }
+        PowerState::Battery { pct } => {
+            dot_rect(fb, x0, y0, 23, 10, false); // body outline
+            dot_rect(fb, x0 + 23, y0 + 3, 2, 4, true); // nub
+            let fw = (*pct as i32).clamp(0, 100) * 19 / 100;
+            if fw > 0 {
+                dot_rect(fb, x0 + 2, y0 + 2, fw, 6, true);
+            }
+            let mut s: String<5> = String::new();
+            let _ = core::fmt::Write::write_fmt(&mut s, format_args!("{}%", pct));
+            Text::new(
+                &s,
+                Point::new(x0 + 29, y0 + 9),
+                MonoTextStyle::new(&FONT_9X15, Color::Black),
+            )
+            .draw(fb)
+            .ok();
+        }
+    }
+}
+
 pub fn render_error(fb: &mut FrameBuffer, line1: &str, line2: &str) {
     fb.fill(Color::White);
     Rectangle::new(Point::new(0, 0), Size::new(200, BAND_H))

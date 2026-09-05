@@ -36,6 +36,7 @@ struct Layout {
     text_right: i32,
     bar: Bar,
     clock: Clock,
+    power: P2,
 }
 
 fn emit_layout(path: &std::path::Path) {
@@ -92,6 +93,10 @@ fn emit_layout(path: &std::path::Path) {
     if l.clock.y < l.band_h as i32 + 12 || l.clock.y > 195 {
         bad.push("clock.y out of range".into());
     }
+    // power icon is ~25×10 px, top-anchored at (x, y).
+    if l.power.x < 0 || l.power.x > 174 || l.power.y < 0 || l.power.y > 190 {
+        bad.push("power out of range".into());
+    }
     if !bad.is_empty() {
         panic!("{}: invalid layout: {}", path.display(), bad.join("; "));
     }
@@ -117,6 +122,8 @@ fn emit_layout(path: &std::path::Path) {
     writeln!(code, "pub const BAR_H: u32 = {};", l.bar.h).unwrap();
     writeln!(code, "pub const CLOCK_RIGHT: i32 = {};", l.clock.right).unwrap();
     writeln!(code, "pub const CLOCK_Y: i32 = {};", l.clock.y).unwrap();
+    writeln!(code, "pub const POWER_X: i32 = {};", l.power.x).unwrap();
+    writeln!(code, "pub const POWER_Y: i32 = {};", l.power.y).unwrap();
 
     let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("layout.rs");
     fs::write(&out, code).unwrap();

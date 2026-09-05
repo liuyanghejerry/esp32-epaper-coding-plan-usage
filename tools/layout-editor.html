@@ -14,6 +14,9 @@
     编辑器按同一语义绘制，条与文字的间距和实机一致。
   - 右下角 HH:MM 为时钟元素（clock.right/y），实机由 NTP 对时、随数据
     每 5 分钟重刷；预览显示浏览器本地时间。
+  - 左下角为电源图标（power.x/y，图标左上角坐标）：实机电池在位时显示
+    电量外框 + 百分比，无电池时显示插头（板上无 USB 检测脚，以电池
+    电压是否落在合理区间判定）；预览用下方"预览数据"里的电源控件。
   - 拖拽元素或选中后用方向键微调（Shift=10px）。
   - "整组移动"模式：Week 行 / 进度条 / reset 一起平移；"单元素"模式只动选中项。
   - "导出 JSON"：生成的就是 firmware/layout.json 的内容（可复制/下载）。
@@ -154,6 +157,15 @@
     </div>
 
     <div class="grp">
+      <div class="grp-title">电源图标（左下角；实机有电池显示电量、无电池显示插头）</div>
+      <div class="row">
+        <span class="name"><span class="swatch" style="background:#000"></span>图标</span>
+        <span class="f"><em>x</em><input type="number" id="p_power_x" data-k="power.x" min="0" max="174" step="1"></span>
+        <span class="f"><em>y</em><input type="number" id="p_power_y" data-k="power.y" min="0" max="190" step="1"></span>
+      </div>
+    </div>
+
+    <div class="grp">
       <div class="grp-title">文本对齐</div>
       <div class="row">
         <span class="name"><span class="swatch" style="background:#000"></span>左缘</span>
@@ -194,6 +206,11 @@
           <span class="name">窗 reset</span>
           <span class="f"><em>t</em><input spellcheck="false" id="d_win_reset" style="width:100%;font-size:12px;padding:3px 4px;border:1px solid var(--border);border-radius:4px"></span>
         </div>
+        <div class="row">
+          <span class="name">电源</span>
+          <span class="f"><em>插头</em><input type="checkbox" id="d_power_usb" checked style="margin:0 6px 0 0"></span>
+          <span class="f"><em>电%</em><input type="number" id="d_battery_pct" min="0" max="100" step="1" style="width:100%"></span>
+        </div>
       </div>
     </details>
 
@@ -228,17 +245,20 @@ const DEFAULT_L = {
   text_right: 190,                     // 数值右缘 x
   bar:    { x: 10, w: 180, h: 14 },    // 两条进度条共有样式
   clock:  { right: 190, y: 195 },      // 右下角 HH:MM（右缘 x、基线 y，实机 NTP 对时）
+  power:  { x: 10, y: 186 },           // 左下角电源图标（图标左上角；实机有电池显示电量、无电池显示插头）
 };
 
 const DATA = {
   weekUsed: 98, weekLimit: 100, weekReset: '09-03 23:59',
   winLabel: '5h', winUsed: 15, winLimit: 100, winReset: '09-02 23:59',
+  powerUsb: true,                      // 预览：无电池（显示插头图标）
+  batPct: 83,                          // 预览：电池电量百分比
 };
 
 const GROUP_OF = { title: 't', week: 'g1', bar1: 'g1', reset1: 'g1',
-                   win: 'g2', bar2: 'g2', reset2: 'g2', clock: 'clock' };
+                   win: 'g2', bar2: 'g2', reset2: 'g2', clock: 'clock', power: 'power' };
 const GROUPS = { g1: ['week', 'bar1', 'reset1'], g2: ['win', 'bar2', 'reset2'],
-                 clock: ['clock'] };
+                 clock: ['clock'], power: ['power'] };
 
 /* ---------- 状态 ---------- */
 let L = JSON.parse(JSON.stringify(DEFAULT_L));
@@ -321,6 +341,7 @@ function elemRect(id) {
     case 'bar2':   return { x: L.bar.x, y: L.bar2.y, w: L.bar.w, h: L.bar.h };
     case 'reset2': return { x: L.reset2.x, y: L.reset2.y - FONT_BASELINE, w: textW(elemText('reset2')), h: FONT_H };
     case 'clock':  return { x: L.clock.right - 45, y: L.clock.y - FONT_BASELINE, w: 45, h: FONT_H };
+    case 'power':  return { x: L.power.x, y: L.power.y, w: 25, h: 10 };
   }
   return null;
 }
@@ -388,6 +409,8 @@ function draw() {
 
     const ct = clockText();
     fwText(ct, L.clock.right - textW(ct), L.clock.y, '#000');
+
+    drawPowerIcon();
   } else {
     fillText('Usage unavailable', 10, 92, '#c00000');
     fillText('last error: [demo]', 10, 116, '#000');
@@ -413,11 +436,38 @@ function draw() {
   if (selected) drawHalo(selected);
 }
 
+/* 电源图标（左下角）：与 render.rs::draw_power 逐像素一致的镜像实现。
+   有电池：25×10 电池外框 + 按电量比例的填充 + "NN%" 文字（基线 y0+9）；
+   无电池：插头图标（两根插脚 + 本体 + 电源线）。 */
+function drawPowerIcon() {
+  const x0 = L.power.x, y0 = L.power.y;
+  const R = (x, y, w, h, filled) => {
+    ctx.fillStyle = '#000';
+    for (let yy = 0; yy < h; yy++)
+      for (let xx = 0; xx < w; xx++)
+        if (filled || xx === 0 || xx === w - 1 || yy === 0 || yy === h - 1)
+          ctx.fillRect(x + xx, y + yy, 1, 1);
+  };
+  if (DATA.powerUsb) {
+    R(x0, y0 + 1, 2, 2, true);
+    R(x0, y0 + 7, 2, 2, true);
+    R(x0 + 3, y0, 8, 10, true);
+    R(x0 + 11, y0 + 4, 7, 2, true);
+  } else {
+    R(x0, y0, 23, 10, false);
+    R(x0 + 23, y0 + 3, 2, 4, true);
+    const pct = clamp(DATA.batPct, 0, 100);
+    const fw = Math.floor(pct * 19 / 100);
+    if (fw > 0) R(x0 + 2, y0 + 2, fw, 6, true);
+    fwText(pct + '%', x0 + 29, y0 + 9, '#000');
+  }
+}
+
 /* ---------- 命中 / 移动 ---------- */
 function hitTest(px, py) {
   if (view !== 'normal') return null;
   if (py >= L.band_h - 2 && py <= L.band_h + 3) return 'band';
-  const list = ['title', 'week', 'bar1', 'reset1', 'win', 'bar2', 'reset2', 'clock'];
+  const list = ['title', 'week', 'bar1', 'reset1', 'win', 'bar2', 'reset2', 'clock', 'power'];
   for (const id of list) {
     const r = elemRect(id);
     if (r && px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h) return id;
@@ -443,6 +493,11 @@ function move1(id, dx, dy) {
     L.clock.y = clamp(L.clock.y + dy, ...yLimText());
     return;
   }
+  if (id === 'power') {
+    L.power.x = clamp(L.power.x + dx, 0, 174);
+    L.power.y = clamp(L.power.y + dy, 0, 190);
+    return;
+  }
   // reset1 / reset2：x 可调，y 同文本行
   const w = textW(elemText(id));
   L[id].x = clamp(L[id].x + dx, 0, 200 - w);
@@ -458,6 +513,7 @@ function applyMove(id, dx, dy, group) {
       L[k].y = Math.max(L[k].y, L.band_h + FONT_BASELINE + 1);
     }
     L.clock.y = Math.max(L.clock.y, L.band_h + FONT_BASELINE + 1);
+    L.power.y = Math.max(L.power.y, L.band_h + 1);
     return;
   }
   if (group && GROUP_OF[id] !== 'title') {
@@ -484,6 +540,11 @@ function move1Abs(id, orig, dx, dy) {
     L.clock.y = clamp(orig.clock.y + dy, ...yLimText());
     return;
   }
+  if (id === 'power') {
+    L.power.x = clamp(orig.power.x + dx, 0, 174);
+    L.power.y = clamp(orig.power.y + dy, 0, 190);
+    return;
+  }
   const w = textW(elemText(id));
   L[id].x = clamp(orig[id].x + dx, 0, 200 - w);
   L[id].y = clamp(orig[id].y + dy, ...yLimText());
@@ -499,6 +560,7 @@ function applyDragMove(d, dx, dy, group) {
       L[k].y = Math.max(orig[k].y, L.band_h + FONT_BASELINE + 1);
     }
     L.clock.y = Math.max(orig.clock.y, L.band_h + FONT_BASELINE + 1);
+    L.power.y = Math.max(orig.power.y, L.band_h + 1);
     return;
   }
   if (group && GROUP_OF[id] !== 'title') {
@@ -561,12 +623,16 @@ function syncPanel() {
   setInp('p_bar2_y', L.bar2.y);
   setInp('p_reset2_x', L.reset2.x); setInp('p_reset2_y', L.reset2.y);
   setInp('p_clock_right', L.clock.right); setInp('p_clock_y', L.clock.y);
+  setInp('p_power_x', L.power.x); setInp('p_power_y', L.power.y);
   setInp('p_text_left', L.text_left); setInp('p_text_right', L.text_right);
   setInp('p_bar_x', L.bar.x); setInp('p_bar_w', L.bar.w); setInp('p_bar_h', L.bar.h);
   setInp('d_week_used', DATA.weekUsed); setInp('d_week_limit', DATA.weekLimit);
   setInp('d_week_reset', DATA.weekReset); setInp('d_win_label', DATA.winLabel);
   setInp('d_win_used', DATA.winUsed); setInp('d_win_limit', DATA.winLimit);
   setInp('d_win_reset', DATA.winReset);
+  setInp('d_battery_pct', DATA.batPct);
+  const usbChk = document.getElementById('d_power_usb');
+  if (usbChk) usbChk.checked = DATA.powerUsb;
 }
 
 function clampAll() {
@@ -583,6 +649,8 @@ function clampAll() {
   L.reset2.y = clamp(L.reset2.y, ...yLimText());
   L.clock.right = clamp(L.clock.right, 45, 199);
   L.clock.y = clamp(L.clock.y, ...yLimText());
+  L.power.x = clamp(L.power.x, 0, 174);
+  L.power.y = clamp(L.power.y, 0, 190);
   L.text_left = clamp(L.text_left, 0, 180);
   L.text_right = clamp(L.text_right, 40, 199);
   L.bar.x = clamp(L.bar.x, 0, 197 - L.bar.w);
@@ -608,14 +676,19 @@ document.querySelectorAll('#panel input[data-k]').forEach((inp) => {
 const DATA_FIELDS = {
   d_week_used: 'weekUsed', d_week_limit: 'weekLimit', d_week_reset: 'weekReset',
   d_win_label: 'winLabel', d_win_used: 'winUsed', d_win_limit: 'winLimit', d_win_reset: 'winReset',
+  d_battery_pct: 'batPct',
 };
 for (const [id, key] of Object.entries(DATA_FIELDS)) {
   const el = document.getElementById(id);
   el.addEventListener('input', () => {
-    DATA[key] = (key.endsWith('Limit') || key.endsWith('Used')) ? (parseInt(el.value, 10) || 0) : el.value;
+    DATA[key] = (key.endsWith('Limit') || key.endsWith('Used') || key === 'batPct')
+      ? (parseInt(el.value, 10) || 0) : el.value;
     draw();
   });
 }
+document.getElementById('d_power_usb').addEventListener('change', (e) => {
+  DATA.powerUsb = e.target.checked; draw();
+});
 
 /* ---------- 工具栏 ---------- */
 function saveLS() {
@@ -661,6 +734,7 @@ function buildJson() {
     text_right: L.text_right,
     bar: { x: L.bar.x, w: L.bar.w, h: L.bar.h },
     clock: { right: L.clock.right, y: L.clock.y },
+    power: { x: L.power.x, y: L.power.y },
   }, null, 2);
 }
 
@@ -674,6 +748,7 @@ const FIELDS = [
   ['text_left', 'text_left'], ['text_right', 'text_right'],
   ['bar.x', 'bar.x'], ['bar.w', 'bar.w'], ['bar.h', 'bar.h'],
   ['clock.right', 'clock.right'], ['clock.y', 'clock.y'],
+  ['power.x', 'power.x'], ['power.y', 'power.y'],
 ];
 function getPath(o, p) { return p.split('.').reduce((a, k) => a[k], o); }
 function buildDiffs() {
@@ -726,7 +801,7 @@ document.getElementById('importFile').addEventListener('change', (e) => {
     try {
       const j = JSON.parse(rd.result);
       for (const key of ['band_h', 'title', 'week', 'bar1', 'reset1', 'win', 'bar2', 'reset2',
-                         'text_left', 'text_right', 'bar', 'clock']) {
+                         'text_left', 'text_right', 'bar', 'clock', 'power']) {
         if (!(key in j)) throw new Error('缺少字段: ' + key);
       }
       L = Object.assign(L, j);
