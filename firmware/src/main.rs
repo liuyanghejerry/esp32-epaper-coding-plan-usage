@@ -19,6 +19,7 @@ use embassy_net::{Runner, StackResources};
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::{
+    analog::adc::{Adc, AdcConfig, Attenuation},
     clock::CpuClock,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
     interrupt::software::SoftwareInterruptControl,
@@ -127,6 +128,15 @@ async fn main(spawner: Spawner) -> ! {
     let mut fb = FrameBuffer::new();
     let bufs = mk_static!(usage::Buffers, usage::Buffers::new());
 
+    // Battery sense: GPIO4 samples VBAT through a 200K/200K divider (Waveshare
+    // board spec), so real VBAT ≈ reading × 2. 11 dB attenuation ⇒ ~3.1 V
+    // full scale on ADC1, hence the ×6200/4095 estimate below. (The battery
+    // power latch GPIO17/BAT_Control is deliberately left untouched — driving
+    // it HIGH would keep the pack powering the board after USB is unplugged.)
+    let mut adc1_config = AdcConfig::new();
+    let mut bat_pin = adc1_config.enable_pin(p.GPIO4, Attenuation::_11dB);
+    let mut adc1 = Adc::new(p.ADC1, adc1_config);
+
     info!("waiting for wifi...");
     if embassy_time::with_timeout(Duration::from_secs(30), stack.wait_config_up())
         .await
@@ -228,6 +238,14 @@ async fn main(spawner: Spawner) -> ! {
         tick += 1;
         // Heartbeat: 30s slices instead of one long sleep, so an attached
         // serial monitor always shows signs of life.
+        let bat_raw = loop {
+            match adc1.read_oneshot(&mut bat_pin) {
+                Ok(v) => break v,
+                Err(nb::Error::WouldBlock) => {}
+                Err(nb::Error::Other(_)) => break 0,
+            }
+        };
+        let bat_mv = bat_raw as u32 * 6200 / 4095;
         let slices = QUERY_INTERVAL_SECS / 30;
         for i in 1..=slices {
             Timer::after(Duration::from_secs(30)).await;
@@ -235,17 +253,21 @@ async fn main(spawner: Spawner) -> ! {
             // monitors (USB buffering drops early boot logs) still see state.
             match &last {
                 Some(v) => info!(
-                    "heartbeat, next query in {}s, clock {}, week {}/{}",
+                    "heartbeat, next query in {}s, clock {}, week {}/{}, bat ~{}mV (raw {})",
                     (slices - i) * 30,
                     shown_clock.as_deref().unwrap_or("--:--"),
                     v.week_used,
-                    v.week_limit
+                    v.week_limit,
+                    bat_mv,
+                    bat_raw
                 ),
                 None => info!(
-                    "heartbeat, next query in {}s, clock {}, no data (failures={})",
+                    "heartbeat, next query in {}s, clock {}, no data (failures={}), bat ~{}mV (raw {})",
                     (slices - i) * 30,
                     shown_clock.as_deref().unwrap_or("--:--"),
-                    failures
+                    failures,
+                    bat_mv,
+                    bat_raw
                 ),
             }
         }

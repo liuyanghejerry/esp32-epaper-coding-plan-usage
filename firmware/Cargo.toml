@@ -21,6 +21,7 @@ esp-backtrace = { version = "0.20.0", features = [
 ] }
 esp-println = { version = "0.18.0", features = ["esp32s3", "log-04"] }
 log = "0.4"
+nb = "1.0"
 embedded-hal = "1.0"
 embedded-graphics = "0.8.2"
 embassy-executor = "0.10.0"
