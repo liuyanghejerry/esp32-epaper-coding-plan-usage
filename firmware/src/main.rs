@@ -1,7 +1,10 @@
 //! Kimi Code plan usage on a Waveshare ESP32-S3-ePaper-1.54G (ESP32-S3-PICO-1).
 //!
 //! Polls https://api.kimi.com/coding/v1/usages over Wi-Fi every 5 minutes and
-//! redraws the panel only when the numbers changed (e-paper longevity).
+//! redraws the panel only when the numbers changed (e-paper longevity). An
+//! NTP-synced "HH:MM" clock (UTC+8) sits in the bottom-right corner and
+//! repaints every cycle — an e-paper keeps its image when powered off, so
+//! the ticking clock is the "device is alive" indicator.
 //!
 //! Board pin map:
 //!   EPD_SCLK=GPIO12  EPD_MOSI=GPIO13  EPD_CS=GPIO11  EPD_DC=GPIO10
@@ -28,9 +31,11 @@ use esp_println::logger::init_logger_from_env;
 use esp_radio::wifi::{
     sta::StationConfig, Config as RadioConfig, ControllerConfig, Interface, WifiController,
 };
+use heapless::String;
 use log::{info, warn};
 
 mod epd;
+mod ntp;
 mod render;
 mod usage;
 
@@ -133,59 +138,92 @@ async fn main(spawner: Spawner) -> ! {
     }
 
     let mut last: Option<UsageView> = None;
+    let mut shown_clock: Option<String<5>> = None;
+    // Unix epoch seconds at the last NTP sync + the sync instant; between
+    // syncs "now" = base + monotonic elapsed.
+    let mut ntp_at: Option<(u64, embassy_time::Instant)> = None;
     let mut failures: u32 = 0;
     let mut error_shown = false;
     let mut tick: u64 = 0;
 
     loop {
+        // ---- wall clock ----
         if stack.is_config_up() {
-            match usage::fetch_usage(stack, bufs, seed ^ tick).await {
-                Ok(view) => {
-                    failures = 0;
-                    error_shown = false;
-                    if last.as_ref() != Some(&view) {
-                        info!("usage changed: {:?} — refreshing panel", view);
-                        render::render(&mut fb, &view);
-                        epd.init().await;
-                        let ok = epd.display(&fb.buf).await;
-                        epd.sleep().await;
-                        info!("refresh completed={}", ok);
-                        last = Some(view);
-                    } else {
-                        info!("usage unchanged, panel untouched");
-                    }
+            match ntp::fetch_epoch(stack).await {
+                Ok(epoch) => {
+                    info!("ntp synced, epoch={}s", epoch);
+                    ntp_at = Some((epoch, embassy_time::Instant::now()));
                 }
-                Err(e) => {
-                    failures += 1;
-                    warn!("usage query failed (#{}): {:?}", failures, e);
-                    if last.is_none() && failures >= 3 && !error_shown {
-                        info!("painting error page: query failed");
-                        render::render_error(&mut fb, "query failed", "check wifi/token");
-                        epd.init().await;
-                        let ok = epd.display(&fb.buf).await;
-                        epd.sleep().await;
-                        info!("error page painted, display ok={}", ok);
-                        error_shown = true;
-                    }
-                }
+                Err(e) => warn!("ntp sync failed: {:?} — clock keeps drifting", e),
             }
-        } else {
+        }
+        let clock: String<5> = match ntp_at {
+            Some((base, at)) => ntp::fmt_hhmm(base + at.elapsed().as_secs()),
+            None => {
+                let mut s: String<5> = String::new();
+                let _ = s.push_str("--:--");
+                s
+            }
+        };
+        let clock_changed = shown_clock.as_ref() != Some(&clock);
+
+        if !stack.is_config_up() {
             warn!("offline, retrying in 30s");
-            if last.is_none() && !error_shown {
+            if last.is_none() {
                 failures += 1;
-                if failures >= 3 {
-                    info!("painting error page: wifi offline");
+                if failures >= 3 && (!error_shown || clock_changed) {
+                    info!("painting error page: wifi offline, clock {}", clock);
                     render::render_error(&mut fb, "wifi offline", "check SSID / password");
+                    render::draw_clock(&mut fb, &clock);
                     epd.init().await;
                     let ok = epd.display(&fb.buf).await;
                     epd.sleep().await;
                     info!("error page painted, display ok={}", ok);
                     error_shown = true;
+                    shown_clock = Some(clock.clone());
                 }
             }
             tick += 1;
             Timer::after(Duration::from_secs(30)).await;
             continue;
+        }
+
+        match usage::fetch_usage(stack, bufs, seed ^ tick).await {
+            Ok(view) => {
+                failures = 0;
+                error_shown = false;
+                if last.as_ref() != Some(&view) || clock_changed {
+                    info!(
+                        "refreshing panel: clock {}, week {}/{}",
+                        clock, view.week_used, view.week_limit
+                    );
+                    render::render(&mut fb, &view);
+                    render::draw_clock(&mut fb, &clock);
+                    epd.init().await;
+                    let ok = epd.display(&fb.buf).await;
+                    epd.sleep().await;
+                    info!("refresh completed={}", ok);
+                    last = Some(view);
+                    shown_clock = Some(clock.clone());
+                } else {
+                    info!("usage unchanged, panel untouched");
+                }
+            }
+            Err(e) => {
+                failures += 1;
+                warn!("usage query failed (#{}): {:?}", failures, e);
+                if last.is_none() && failures >= 3 && (!error_shown || clock_changed) {
+                    info!("painting error page: query failed, clock {}", clock);
+                    render::render_error(&mut fb, "query failed", "check wifi/token");
+                    render::draw_clock(&mut fb, &clock);
+                    epd.init().await;
+                    let ok = epd.display(&fb.buf).await;
+                    epd.sleep().await;
+                    info!("error page painted, display ok={}", ok);
+                    error_shown = true;
+                    shown_clock = Some(clock.clone());
+                }
+            }
         }
         tick += 1;
         // Heartbeat: 30s slices instead of one long sleep, so an attached
@@ -197,14 +235,16 @@ async fn main(spawner: Spawner) -> ! {
             // monitors (USB buffering drops early boot logs) still see state.
             match &last {
                 Some(v) => info!(
-                    "heartbeat, next query in {}s, week {}/{}",
+                    "heartbeat, next query in {}s, clock {}, week {}/{}",
                     (slices - i) * 30,
+                    shown_clock.as_deref().unwrap_or("--:--"),
                     v.week_used,
                     v.week_limit
                 ),
                 None => info!(
-                    "heartbeat, next query in {}s, no data (failures={})",
+                    "heartbeat, next query in {}s, clock {}, no data (failures={})",
                     (slices - i) * 30,
+                    shown_clock.as_deref().unwrap_or("--:--"),
                     failures
                 ),
             }

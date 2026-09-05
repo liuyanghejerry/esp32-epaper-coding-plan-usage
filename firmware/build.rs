@@ -18,6 +18,11 @@ struct Bar {
     h: u32,
 }
 #[derive(serde::Deserialize)]
+struct Clock {
+    right: i32,
+    y: i32,
+}
+#[derive(serde::Deserialize)]
 struct Layout {
     band_h: u32,
     title: P2,
@@ -30,6 +35,7 @@ struct Layout {
     text_left: i32,
     text_right: i32,
     bar: Bar,
+    clock: Clock,
 }
 
 fn emit_layout(path: &std::path::Path) {
@@ -40,7 +46,9 @@ fn emit_layout(path: &std::path::Path) {
     let l: Layout = serde_json::from_str(&text)
         .unwrap_or_else(|e| panic!("{}: invalid layout JSON: {e}", path.display()));
 
-    // Sanity checks (ranges mirror tools/layout-editor.html).
+    // All text y values are baselines (embedded-graphics Text::new /
+    // FONT_9X15: cell top = y-11, digits bottom = y) — same semantics as
+    // tools/layout-editor.html.
     let mut bad: Vec<String> = vec![];
     if !(12..=60).contains(&l.band_h) {
         bad.push("band_h must be 12..=60".into());
@@ -48,7 +56,7 @@ fn emit_layout(path: &std::path::Path) {
     if l.title.x < 0 || l.title.x > 200 - 15 * 9 {
         bad.push("title.x out of range".into());
     }
-    if l.title.y < 0 || l.title.y + 15 > l.band_h as i32 {
+    if l.title.y < 11 || l.title.y + 4 > l.band_h as i32 {
         bad.push("title.y must keep the title inside the header band".into());
     }
     // reset text is "reset MM-DD HH:mm" (17 chars), rendered 9px per char.
@@ -68,7 +76,7 @@ fn emit_layout(path: &std::path::Path) {
         bad.push("bar geometry out of range".into());
     }
     for (name, y) in [("week", l.week.y), ("reset1", l.reset1.y), ("win", l.win.y), ("reset2", l.reset2.y)] {
-        if y < l.band_h as i32 + 1 || y > 184 {
+        if y < l.band_h as i32 + 12 || y > 195 {
             bad.push(format!("{name}.y out of range"));
         }
     }
@@ -76,6 +84,13 @@ fn emit_layout(path: &std::path::Path) {
         if y < l.band_h as i32 + 1 || y > 200 - l.bar.h as i32 - 1 {
             bad.push(format!("{name}.y out of range"));
         }
+    }
+    // clock is "HH:MM" (5 chars × 9 px), right-anchored.
+    if l.clock.right < 45 || l.clock.right > 199 {
+        bad.push("clock.right out of range".into());
+    }
+    if l.clock.y < l.band_h as i32 + 12 || l.clock.y > 195 {
+        bad.push("clock.y out of range".into());
     }
     if !bad.is_empty() {
         panic!("{}: invalid layout: {}", path.display(), bad.join("; "));
@@ -100,6 +115,8 @@ fn emit_layout(path: &std::path::Path) {
     writeln!(code, "pub const BAR_X: i32 = {};", l.bar.x).unwrap();
     writeln!(code, "pub const BAR_W: u32 = {};", l.bar.w).unwrap();
     writeln!(code, "pub const BAR_H: u32 = {};", l.bar.h).unwrap();
+    writeln!(code, "pub const CLOCK_RIGHT: i32 = {};", l.clock.right).unwrap();
+    writeln!(code, "pub const CLOCK_Y: i32 = {};", l.clock.y).unwrap();
 
     let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("layout.rs");
     fs::write(&out, code).unwrap();

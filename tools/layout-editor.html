@@ -12,6 +12,8 @@
     （9×15/字符，字符宽固定 9px）。layout.json 里的文字 y 是"基线"
     （固件 Text::new 的 alphabetic baseline，即数字/大写字母的底部），
     编辑器按同一语义绘制，条与文字的间距和实机一致。
+  - 右下角 HH:MM 为时钟元素（clock.right/y），实机由 NTP 对时、随数据
+    每 5 分钟重刷；预览显示浏览器本地时间。
   - 拖拽元素或选中后用方向键微调（Shift=10px）。
   - "整组移动"模式：Week 行 / 进度条 / reset 一起平移；"单元素"模式只动选中项。
   - "导出 JSON"：生成的就是 firmware/layout.json 的内容（可复制/下载）。
@@ -143,6 +145,15 @@
     </div>
 
     <div class="grp">
+      <div class="grp-title">时钟（右下角 HH:MM，实机 NTP 对时、随数据每 5 分钟重刷）</div>
+      <div class="row">
+        <span class="name"><span class="swatch" style="background:#000"></span>HH:MM</span>
+        <span class="f"><em>R</em><input type="number" id="p_clock_right" data-k="clock.right" min="45" max="199" step="1"></span>
+        <span class="f"><em>y</em><input type="number" id="p_clock_y" data-k="clock.y" min="24" max="195" step="1"></span>
+      </div>
+    </div>
+
+    <div class="grp">
       <div class="grp-title">文本对齐</div>
       <div class="row">
         <span class="name"><span class="swatch" style="background:#000"></span>左缘</span>
@@ -216,6 +227,7 @@ const DEFAULT_L = {
   text_left: 10,                       // label 左缘 x
   text_right: 190,                     // 数值右缘 x
   bar:    { x: 10, w: 180, h: 14 },    // 两条进度条共有样式
+  clock:  { right: 190, y: 195 },      // 右下角 HH:MM（右缘 x、基线 y，实机 NTP 对时）
 };
 
 const DATA = {
@@ -224,8 +236,9 @@ const DATA = {
 };
 
 const GROUP_OF = { title: 't', week: 'g1', bar1: 'g1', reset1: 'g1',
-                   win: 'g2', bar2: 'g2', reset2: 'g2' };
-const GROUPS = { g1: ['week', 'bar1', 'reset1'], g2: ['win', 'bar2', 'reset2'] };
+                   win: 'g2', bar2: 'g2', reset2: 'g2', clock: 'clock' };
+const GROUPS = { g1: ['week', 'bar1', 'reset1'], g2: ['win', 'bar2', 'reset2'],
+                 clock: ['clock'] };
 
 /* ---------- 状态 ---------- */
 let L = JSON.parse(JSON.stringify(DEFAULT_L));
@@ -291,6 +304,12 @@ function elemText(id) {
   if (id === 'reset2') return 'reset ' + DATA.winReset;
   return '';
 }
+/* 时钟固定显示 "HH:MM"（5 字符 × 9px）。实机为 NTP 对时的 UTC+8 时间，
+   预览用浏览器本地时间，仅影响画布观感。 */
+function clockText() {
+  const d = new Date();
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
 function elemRect(id) {
   switch (id) {
     case 'band':   return { x: 0, y: L.band_h - 2, w: 200, h: 4 };
@@ -301,6 +320,7 @@ function elemRect(id) {
     case 'win':    return { x: L.text_left, y: L.win.y - FONT_BASELINE, w: L.text_right - L.text_left, h: FONT_H };
     case 'bar2':   return { x: L.bar.x, y: L.bar2.y, w: L.bar.w, h: L.bar.h };
     case 'reset2': return { x: L.reset2.x, y: L.reset2.y - FONT_BASELINE, w: textW(elemText('reset2')), h: FONT_H };
+    case 'clock':  return { x: L.clock.right - 45, y: L.clock.y - FONT_BASELINE, w: 45, h: FONT_H };
   }
   return null;
 }
@@ -365,6 +385,9 @@ function draw() {
     fillTextRight(`${DATA.winUsed}/${DATA.winLimit} (${pct(DATA.winUsed, DATA.winLimit)}%)`, L.win.y, '#000');
     drawBar(L.bar2.y, DATA.winUsed, DATA.winLimit);
     fillText('reset ' + DATA.winReset, L.reset2.x, L.reset2.y, '#000');
+
+    const ct = clockText();
+    fwText(ct, L.clock.right - textW(ct), L.clock.y, '#000');
   } else {
     fillText('Usage unavailable', 10, 92, '#c00000');
     fillText('last error: [demo]', 10, 116, '#000');
@@ -394,7 +417,7 @@ function draw() {
 function hitTest(px, py) {
   if (view !== 'normal') return null;
   if (py >= L.band_h - 2 && py <= L.band_h + 3) return 'band';
-  const list = ['title', 'week', 'bar1', 'reset1', 'win', 'bar2', 'reset2'];
+  const list = ['title', 'week', 'bar1', 'reset1', 'win', 'bar2', 'reset2', 'clock'];
   for (const id of list) {
     const r = elemRect(id);
     if (r && px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h) return id;
@@ -415,6 +438,11 @@ function move1(id, dx, dy) {
     L.title.y = clamp(L.title.y + dy, FONT_BASELINE, Math.max(FONT_BASELINE, L.band_h - 4));
     return;
   }
+  if (id === 'clock') {
+    L.clock.right = clamp(L.clock.right + dx, 45, 199);
+    L.clock.y = clamp(L.clock.y + dy, ...yLimText());
+    return;
+  }
   // reset1 / reset2：x 可调，y 同文本行
   const w = textW(elemText(id));
   L[id].x = clamp(L[id].x + dx, 0, 200 - w);
@@ -429,6 +457,7 @@ function applyMove(id, dx, dy, group) {
     for (const k of ['week', 'bar1', 'reset1', 'win', 'bar2', 'reset2']) {
       L[k].y = Math.max(L[k].y, L.band_h + FONT_BASELINE + 1);
     }
+    L.clock.y = Math.max(L.clock.y, L.band_h + FONT_BASELINE + 1);
     return;
   }
   if (group && GROUP_OF[id] !== 'title') {
@@ -450,6 +479,11 @@ function move1Abs(id, orig, dx, dy) {
     L.title.y = clamp(orig.title.y + dy, FONT_BASELINE, Math.max(FONT_BASELINE, L.band_h - 4));
     return;
   }
+  if (id === 'clock') {
+    L.clock.right = clamp(orig.clock.right + dx, 45, 199);
+    L.clock.y = clamp(orig.clock.y + dy, ...yLimText());
+    return;
+  }
   const w = textW(elemText(id));
   L[id].x = clamp(orig[id].x + dx, 0, 200 - w);
   L[id].y = clamp(orig[id].y + dy, ...yLimText());
@@ -464,6 +498,7 @@ function applyDragMove(d, dx, dy, group) {
     for (const k of ['week', 'bar1', 'reset1', 'win', 'bar2', 'reset2']) {
       L[k].y = Math.max(orig[k].y, L.band_h + FONT_BASELINE + 1);
     }
+    L.clock.y = Math.max(orig.clock.y, L.band_h + FONT_BASELINE + 1);
     return;
   }
   if (group && GROUP_OF[id] !== 'title') {
@@ -525,6 +560,7 @@ function syncPanel() {
   setInp('p_win_y', L.win.y);
   setInp('p_bar2_y', L.bar2.y);
   setInp('p_reset2_x', L.reset2.x); setInp('p_reset2_y', L.reset2.y);
+  setInp('p_clock_right', L.clock.right); setInp('p_clock_y', L.clock.y);
   setInp('p_text_left', L.text_left); setInp('p_text_right', L.text_right);
   setInp('p_bar_x', L.bar.x); setInp('p_bar_w', L.bar.w); setInp('p_bar_h', L.bar.h);
   setInp('d_week_used', DATA.weekUsed); setInp('d_week_limit', DATA.weekLimit);
@@ -545,6 +581,8 @@ function clampAll() {
   L.bar2.y = clamp(L.bar2.y, ...yLimBar());
   L.reset2.x = clamp(L.reset2.x, 0, 200 - textW(elemText('reset2')));
   L.reset2.y = clamp(L.reset2.y, ...yLimText());
+  L.clock.right = clamp(L.clock.right, 45, 199);
+  L.clock.y = clamp(L.clock.y, ...yLimText());
   L.text_left = clamp(L.text_left, 0, 180);
   L.text_right = clamp(L.text_right, 40, 199);
   L.bar.x = clamp(L.bar.x, 0, 197 - L.bar.w);
@@ -622,6 +660,7 @@ function buildJson() {
     text_left: L.text_left,
     text_right: L.text_right,
     bar: { x: L.bar.x, w: L.bar.w, h: L.bar.h },
+    clock: { right: L.clock.right, y: L.clock.y },
   }, null, 2);
 }
 
@@ -634,6 +673,7 @@ const FIELDS = [
   ['reset2.x', 'reset2.x'], ['reset2.y', 'reset2.y'],
   ['text_left', 'text_left'], ['text_right', 'text_right'],
   ['bar.x', 'bar.x'], ['bar.w', 'bar.w'], ['bar.h', 'bar.h'],
+  ['clock.right', 'clock.right'], ['clock.y', 'clock.y'],
 ];
 function getPath(o, p) { return p.split('.').reduce((a, k) => a[k], o); }
 function buildDiffs() {
@@ -686,7 +726,7 @@ document.getElementById('importFile').addEventListener('change', (e) => {
     try {
       const j = JSON.parse(rd.result);
       for (const key of ['band_h', 'title', 'week', 'bar1', 'reset1', 'win', 'bar2', 'reset2',
-                         'text_left', 'text_right', 'bar']) {
+                         'text_left', 'text_right', 'bar', 'clock']) {
         if (!(key in j)) throw new Error('缺少字段: ' + key);
       }
       L = Object.assign(L, j);

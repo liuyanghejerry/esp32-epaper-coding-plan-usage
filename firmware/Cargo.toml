@@ -29,6 +29,7 @@ embassy-net = { version = "0.9.0", features = [
     "dhcpv4",
     "medium-ethernet",
     "tcp",
+    "udp",
     "dns",
 ] }
 # `rsa`: api.kimi.com sits behind a Volcano-Engine WAF with an RSA-only cert

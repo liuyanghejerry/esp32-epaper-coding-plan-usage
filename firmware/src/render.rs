@@ -117,6 +117,20 @@ pub fn render(fb: &mut FrameBuffer, u: &UsageView) {
     text(fb, &s, RESET2_X, RESET2_Y, Color::Black);
 }
 
+/// Right-aligned "HH:MM" wall clock (NTP-synced, UTC+8) in the bottom-right
+/// corner — a live display proves the device is powered, which a static
+/// e-paper image cannot.
+pub fn draw_clock(fb: &mut FrameBuffer, hhmm: &str) {
+    let w = hhmm.len() as i32 * 9;
+    Text::new(
+        hhmm,
+        Point::new(CLOCK_RIGHT - w, CLOCK_Y),
+        MonoTextStyle::new(&FONT_9X15, Color::Black),
+    )
+    .draw(fb)
+    .ok();
+}
+
 pub fn render_error(fb: &mut FrameBuffer, line1: &str, line2: &str) {
     fb.fill(Color::White);
     Rectangle::new(Point::new(0, 0), Size::new(200, BAND_H))
