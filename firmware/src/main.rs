@@ -71,8 +71,8 @@ macro_rules! mk_static {
     }};
 }
 
-/// One usage query every 5 minutes; the wait is split into 30s heartbeats.
-const QUERY_INTERVAL_SECS: u64 = 300;
+/// One usage query every 10 minutes; the wait is split into 30s heartbeats.
+const QUERY_INTERVAL_SECS: u64 = 600;
 
 /// Hold the PWR button this long to trigger the soft power-off. The stock
 /// Waveshare BSP trips at ~1 s (multi_button LONG_TICKS); 2 s makes an
